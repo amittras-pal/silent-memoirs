@@ -1,6 +1,42 @@
 import type { StorageProvider, JournalEntry } from './storage';
 import type { AgeIdentity } from './crypto';
 import { encryptData, decryptData } from './crypto';
+import { resolveEntryTitle } from './entryTitle';
+
+const MANIFEST_FILE = 'manifest.age';
+
+export interface EntryMetadata {
+  id: string;
+  path: string;
+  name: string;
+  parentPath: string;
+  title: string;
+  date: string;
+  year: string;
+  updatedAt: string;
+}
+
+export interface EntryDirectory {
+  path: string;
+  name: string;
+  parentPath: string;
+  folderCount: number;
+  entryCount: number;
+  updatedAt: string;
+}
+
+export interface DirectoryListing {
+  currentPath: string;
+  folders: EntryDirectory[];
+  entries: EntryMetadata[];
+}
+
+interface ManifestFile {
+  version: number;
+  updatedAt: string;
+  entries: EntryMetadata[];
+  directories: EntryDirectory[];
+}
 
 export class SyncEngine {
   private storage: StorageProvider;
@@ -9,6 +45,197 @@ export class SyncEngine {
   constructor(storage: StorageProvider, identity: AgeIdentity) {
     this.storage = storage;
     this.identity = identity;
+  }
+
+  private normalizeDirectoryPath(path: string | null | undefined): string {
+    if (!path) return '';
+    return path.split('/').filter(Boolean).join('/');
+  }
+
+  private getParentPath(path: string): string {
+    const segments = path.split('/').filter(Boolean);
+    if (segments.length <= 1) return '';
+    return segments.slice(0, -1).join('/');
+  }
+
+  private getEntryName(path: string): string {
+    const fileName = path.split('/').pop() || '';
+    return fileName.replace(/\.age$/, '');
+  }
+
+  private getYearFromDate(date: string): string {
+    return date.split('-')[0] || new Date().getFullYear().toString();
+  }
+
+  private toMetadata(entry: JournalEntry, path: string): EntryMetadata {
+    const parentPath = this.getParentPath(path);
+
+    return {
+      id: entry.id,
+      path,
+      name: this.getEntryName(path),
+      parentPath,
+      title: resolveEntryTitle(entry.title, entry.date),
+      date: entry.date,
+      year: this.getYearFromDate(entry.date),
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  private sortMetadata(entries: EntryMetadata[]): EntryMetadata[] {
+    return [...entries].sort((a, b) => {
+      const byDate = b.date.localeCompare(a.date);
+      if (byDate !== 0) return byDate;
+      return b.updatedAt.localeCompare(a.updatedAt);
+    });
+  }
+
+  private sortFolderChildren(folders: EntryDirectory[]): EntryDirectory[] {
+    return [...folders].sort((a, b) => {
+      const aYearFolder = /^\d{4}$/.test(a.name);
+      const bYearFolder = /^\d{4}$/.test(b.name);
+
+      if (aYearFolder && bYearFolder) {
+        return b.name.localeCompare(a.name);
+      }
+
+      if (aYearFolder) return -1;
+      if (bYearFolder) return 1;
+      return a.name.localeCompare(b.name);
+    });
+  }
+
+  private buildDirectories(entries: EntryMetadata[]): EntryDirectory[] {
+    const now = new Date().toISOString();
+    const directories = new Map<string, EntryDirectory>();
+
+    const ensureDirectory = (rawPath: string) => {
+      const path = this.normalizeDirectoryPath(rawPath);
+      if (directories.has(path)) return;
+
+      const parentPath = this.getParentPath(path);
+      const name = path ? path.split('/').pop() || path : 'Entries';
+
+      directories.set(path, {
+        path,
+        name,
+        parentPath,
+        folderCount: 0,
+        entryCount: 0,
+        updatedAt: now,
+      });
+
+      if (path) {
+        ensureDirectory(parentPath);
+      }
+    };
+
+    ensureDirectory('');
+
+    for (const entry of entries) {
+      const parentPath = this.normalizeDirectoryPath(entry.parentPath);
+      ensureDirectory(parentPath);
+
+      const directParent = directories.get(parentPath);
+      if (directParent) {
+        directParent.entryCount += 1;
+      }
+
+      const chain = parentPath ? ['', ...parentPath.split('/').map((_, index, parts) => parts.slice(0, index + 1).join('/'))] : [''];
+      for (const path of chain) {
+        const dir = directories.get(path);
+        if (dir && entry.updatedAt > dir.updatedAt) {
+          dir.updatedAt = entry.updatedAt;
+        }
+      }
+    }
+
+    for (const dir of directories.values()) {
+      if (!dir.path) continue;
+      const parent = directories.get(dir.parentPath);
+      if (parent) {
+        parent.folderCount += 1;
+      }
+    }
+
+    return [...directories.values()].sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  private normalizeManifestEntries(rawEntries: unknown[]): EntryMetadata[] {
+    const normalized = rawEntries
+      .map((item) => {
+        if (!item || typeof item !== 'object') return null;
+
+        const candidate = item as Partial<EntryMetadata>;
+        const path = typeof candidate.path === 'string' ? candidate.path : '';
+        const date = typeof candidate.date === 'string' ? candidate.date : '';
+
+        if (!path || !date) return null;
+
+        const parentPath = this.normalizeDirectoryPath(
+          typeof candidate.parentPath === 'string' ? candidate.parentPath : this.getParentPath(path),
+        );
+
+        return {
+          id: typeof candidate.id === 'string' && candidate.id ? candidate.id : path,
+          path,
+          name: typeof candidate.name === 'string' && candidate.name ? candidate.name : this.getEntryName(path),
+          parentPath,
+          title: resolveEntryTitle(typeof candidate.title === 'string' ? candidate.title : '', date),
+          date,
+          year: typeof candidate.year === 'string' && candidate.year ? candidate.year : this.getYearFromDate(date),
+          updatedAt: typeof candidate.updatedAt === 'string' && candidate.updatedAt ? candidate.updatedAt : new Date().toISOString(),
+        };
+      })
+      .filter((entry): entry is EntryMetadata => Boolean(entry));
+
+    return this.sortMetadata(normalized);
+  }
+
+  private createManifest(entries: EntryMetadata[]): ManifestFile {
+    const sortedEntries = this.sortMetadata(entries);
+
+    return {
+      version: 2,
+      updatedAt: new Date().toISOString(),
+      entries: sortedEntries,
+      directories: this.buildDirectories(sortedEntries),
+    };
+  }
+
+  private async readManifest(): Promise<ManifestFile | null> {
+    const bytes = await this.storage.downloadFile(MANIFEST_FILE);
+    if (!bytes) return null;
+
+    const decrypted = await decryptData(this.identity.secretKey, bytes);
+    const parsed = JSON.parse(decrypted) as Partial<ManifestFile>;
+    if (!Array.isArray(parsed.entries)) return null;
+
+    const entries = this.normalizeManifestEntries(parsed.entries);
+
+    return {
+      version: parsed.version || 2,
+      updatedAt: parsed.updatedAt || new Date().toISOString(),
+      entries,
+      directories: this.buildDirectories(entries),
+    };
+  }
+
+  private async writeManifest(entries: EntryMetadata[]): Promise<void> {
+    const payload = this.createManifest(entries);
+
+    const encrypted = await encryptData(this.identity.publicKey, JSON.stringify(payload));
+    await this.storage.uploadFile(MANIFEST_FILE, encrypted);
+  }
+
+  private async getManifest(): Promise<ManifestFile> {
+    const manifest = await this.readManifest();
+    if (manifest) {
+      return manifest;
+    }
+
+    const entries = await this.rebuildManifest();
+    return this.createManifest(entries);
   }
 
   // Generate entry path depending on the date (e.g. 2024-04-08_12-30 -> 2024/2024-04-08_12-30.age)
@@ -43,6 +270,50 @@ export class SyncEngine {
     return JSON.parse(decrypted) as JournalEntry;
   }
 
+  public async getEntryMetadata(): Promise<EntryMetadata[]> {
+    const manifest = await this.getManifest();
+    return manifest.entries;
+  }
+
+  public async getDirectoryListing(directoryPath = ''): Promise<DirectoryListing> {
+    const manifest = await this.getManifest();
+    const normalizedPath = this.normalizeDirectoryPath(directoryPath);
+    const isKnownPath = manifest.directories.some((folder) => folder.path === normalizedPath);
+    const currentPath = isKnownPath ? normalizedPath : '';
+
+    const folders = this.sortFolderChildren(
+      manifest.directories.filter((folder) => folder.parentPath === currentPath && folder.path !== currentPath),
+    );
+
+    const entries = this.sortMetadata(
+      manifest.entries.filter((entry) => entry.parentPath === currentPath),
+    );
+
+    return {
+      currentPath,
+      folders,
+      entries,
+    };
+  }
+
+  public async rebuildManifest(): Promise<EntryMetadata[]> {
+    const years = await this.getYears();
+    const entries: EntryMetadata[] = [];
+
+    for (const year of years) {
+      const paths = await this.getEntriesForYear(year);
+      for (const path of paths) {
+        const entry = await this.fetchEntry(path);
+        if (entry) {
+          entries.push(this.toMetadata(entry, path));
+        }
+      }
+    }
+
+    await this.writeManifest(entries);
+    return this.sortMetadata(entries);
+  }
+
   // Encrypt and upload an entry to its correct path
   public async saveEntry(entry: JournalEntry): Promise<string> {
     const path = SyncEngine.getEntryPath(entry.date);
@@ -50,10 +321,29 @@ export class SyncEngine {
     const encrypted = await encryptData(this.identity.publicKey, payload);
     
     await this.storage.uploadFile(path, encrypted);
+
+    const manifest = await this.readManifest();
+    if (!manifest) {
+      await this.rebuildManifest();
+      return path;
+    }
+
+    const updatedEntries = manifest.entries.filter((item) => item.path !== path && item.id !== entry.id);
+    updatedEntries.unshift(this.toMetadata(entry, path));
+    await this.writeManifest(updatedEntries);
+
     return path;
   }
 
   public async deleteEntry(path: string): Promise<void> {
     await this.storage.deleteFile(path);
+
+    const manifest = await this.readManifest();
+    if (!manifest) {
+      return;
+    }
+
+    const updatedEntries = manifest.entries.filter((item) => item.path !== path);
+    await this.writeManifest(updatedEntries);
   }
 }

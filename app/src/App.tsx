@@ -1,20 +1,45 @@
-import { ActionIcon, AppShell, Burger, Button, Center, Flex, Group, Loader, Modal, NavLink, ScrollArea, Text, TextInput, Tooltip, useMantineColorScheme } from '@mantine/core';
+import { ActionIcon, AppShell, Burger, Button, Center, Flex, Group, Loader, Modal, NavLink, Text, TextInput, Tooltip, useMantineColorScheme } from '@mantine/core';
 import { DateInput } from '@mantine/dates';
 import { useDisclosure } from '@mantine/hooks';
 import { Editor } from './components/Editor';
 import dayjs from 'dayjs';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 
 import { IconDeviceFloppy, IconLogout, IconMoon, IconPlus, IconSun, IconX } from '@tabler/icons-react';
 import { AuthWall, clearCachedGoogleToken } from './components/AuthWall';
+import { EntriesList } from './components/EntriesList';
 import { VaultSetupWall } from './components/VaultSetupWall';
+import { Viewer } from './components/Viewer';
+import { buildDefaultEntryTitle, isDateSyncedEntryTitle, parseEntryDate, resolveEntryTitle } from './lib/entryTitle';
+import { buildEditorRoute, buildEntriesRoute, buildViewerRoute, decodeDirectoryPath, decodeEntryPath, ROUTES } from './lib/routes';
 import { type GoogleDriveStorage, type JournalEntry, UnauthorizedError } from './lib/storage';
-import { SyncEngine } from './lib/sync';
+import { type EntryDirectory, type EntryMetadata, SyncEngine } from './lib/sync';
 import { VaultManager } from './lib/vault';
 
 import '@mantine/dates/styles.css';
 
+function extractTimeToken(value: string): string {
+  const match = /_(\d{2}-\d{2})$/.exec(value);
+  if (match) return match[1];
+  return dayjs().format('HH-mm');
+}
+
+function composeEditorDate(date: Date, currentValue: string): string {
+  return `${dayjs(date).format('YYYY-MM-DD')}_${extractTimeToken(currentValue)}`;
+}
+
+function getParentDirectory(path: string | null): string {
+  if (!path) return '';
+  const segments = path.split('/').filter(Boolean);
+  if (segments.length <= 1) return '';
+  return segments.slice(0, -1).join('/');
+}
+
 export default function App() {
+  const navigate = useNavigate();
+  const location = useLocation();
+
   const [opened, { toggle }] = useDisclosure();
   const { colorScheme, toggleColorScheme } = useMantineColorScheme();
   
@@ -24,8 +49,10 @@ export default function App() {
   const [syncEngine, setSyncEngine] = useState<SyncEngine | null>(null);
   
   // Data state
-  const [years, setYears] = useState<string[]>([]);
-  const [entriesByYear, setEntriesByYear] = useState<Record<string, string[]>>({});
+  const [currentDirectoryPath, setCurrentDirectoryPath] = useState('');
+  const [directoryFolders, setDirectoryFolders] = useState<EntryDirectory[]>([]);
+  const [directoryEntries, setDirectoryEntries] = useState<EntryMetadata[]>([]);
+  const [isLoadingDirectory, setIsLoadingDirectory] = useState(false);
   const [activeEntryPath, setActiveEntryPath] = useState<string | null>(null);
   const [activeEntryId, setActiveEntryId] = useState<string | null>(null);
   
@@ -33,6 +60,8 @@ export default function App() {
   const [editorTitle, setEditorTitle] = useState('');
   const [editorContent, setEditorContent] = useState<string>('');
   const [editorDate, setEditorDate] = useState<string>('');
+  const [isDraftMode, setIsDraftMode] = useState(false);
+  const [isLoadingEntry, setIsLoadingEntry] = useState(false);
   
   // Track dirty state
   const [initialEditorTitle, setInitialEditorTitle] = useState('');
@@ -41,9 +70,7 @@ export default function App() {
   
   const [isSaving, setIsSaving] = useState(false);
 
-  // Modal State
-  const [newEntryModalOpened, { open: openNewEntryModal, close: closeNewEntryModal }] = useDisclosure(false);
-  const [newEntryDate, setNewEntryDate] = useState<Date | null>(new Date());
+  // Route-entry state bridge
   const isNewEntryRef = useRef(false);
   
   // Inactivity & Lock State
@@ -51,11 +78,83 @@ export default function App() {
   const [inactivityModalOpened, { open: openInactivityModal, close: closeInactivityModal }] = useDisclosure(false);
   const [countdown, setCountdown] = useState(30);
 
+  const routeQuery = useMemo(() => new URLSearchParams(location.search), [location.search]);
+
+  const routeEntryPath = useMemo(() => {
+    return decodeEntryPath(routeQuery.get('e'));
+  }, [routeQuery]);
+
+  const routeDirectoryPath = useMemo(() => {
+    return decodeDirectoryPath(routeQuery.get('dir'));
+  }, [routeQuery]);
+
+  const editorDateValue = useMemo(() => {
+    return parseEntryDate(editorDate);
+  }, [editorDate]);
+
   const isDirty = activeEntryPath !== null && (
     editorTitle !== initialEditorTitle ||
     editorContent !== initialEditorContent ||
     editorDate !== initialEditorDate
   );
+
+  const resetEditorState = useCallback(() => {
+    setActiveEntryPath(null);
+    setActiveEntryId(null);
+    setEditorTitle('');
+    setEditorContent('');
+    setEditorDate('');
+    setInitialEditorTitle('');
+    setInitialEditorContent('');
+    setInitialEditorDate('');
+    setIsDraftMode(false);
+  }, []);
+
+  const confirmDiscardChanges = useCallback((message: string): boolean => {
+    if (!isDirty) return true;
+    return window.confirm(message);
+  }, [isDirty]);
+
+  const startDraftForDate = useCallback((date: Date = new Date()) => {
+    const id = crypto.randomUUID();
+    const dateStr = dayjs(date).format('YYYY-MM-DD_HH-mm');
+    const path = SyncEngine.getEntryPath(dateStr);
+    const defaultTitle = buildDefaultEntryTitle(dateStr);
+
+    isNewEntryRef.current = true;
+    setIsLoadingEntry(false);
+    setIsDraftMode(true);
+    setActiveEntryPath(path);
+    setActiveEntryId(id);
+    setEditorTitle(defaultTitle);
+    setEditorContent('');
+    setEditorDate(dateStr);
+    setInitialEditorTitle(defaultTitle);
+    setInitialEditorContent('');
+    setInitialEditorDate(dateStr);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    clearCachedGoogleToken();
+    setStorage(null);
+    setVaultManager(null);
+    setSyncEngine(null);
+    setCurrentDirectoryPath('');
+    setDirectoryFolders([]);
+    setDirectoryEntries([]);
+    setIsLoadingDirectory(false);
+    setIsSaving(false);
+    resetEditorState();
+    closeInactivityModal();
+    navigate(ROUTES.login, { replace: true });
+  }, [closeInactivityModal, navigate, resetEditorState]);
+
+  const handleAuthFailure = useCallback((err: unknown) => {
+    console.error(err);
+    if (err instanceof UnauthorizedError) {
+      handleLogout();
+    }
+  }, [handleLogout]);
 
   // Before unload handler
   useEffect(() => {
@@ -91,13 +190,12 @@ export default function App() {
     };
   }, []);
 
-  const handleLockVault = () => {
+  const handleLockVault = useCallback(() => {
     setVaultManager(null);
     setSyncEngine(null);
-    // Deliberately NOT clearing activeEntryPath, editorTitle, etc.
-    // This perfectly preserves the unsaved workspace when unlocking later.
     closeInactivityModal();
-  };
+    navigate(ROUTES.unlock, { replace: true });
+  }, [closeInactivityModal, navigate]);
 
   useEffect(() => {
     if (!vaultManager) return; // Only track if unlocked
@@ -117,7 +215,7 @@ export default function App() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [vaultManager, lastActive, inactivityModalOpened]);
+  }, [handleLockVault, inactivityModalOpened, lastActive, openInactivityModal, vaultManager]);
 
   // Mobile/OS Background check
   useEffect(() => {
@@ -132,106 +230,207 @@ export default function App() {
     
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [lastActive, vaultManager]);
+  }, [handleLockVault, lastActive, vaultManager]);
 
   useEffect(() => {
     if (vaultManager && storage) {
+      let cancelled = false;
+
       const loadSync = async () => {
         const engine = new SyncEngine(storage, vaultManager.identity!);
+        if (cancelled) return;
         setSyncEngine(engine);
-        const fetchedYears = await engine.getYears();
-        setYears(fetchedYears);
       };
-      
-      const handleAuthFailure = (err: any) => {
-        console.error(err);
-        if (err instanceof UnauthorizedError) {
-          handleLogout();
-        }
-      };
-
       loadSync().catch(handleAuthFailure);
+
+      return () => {
+        cancelled = true;
+      };
     }
-  }, [vaultManager, storage]);
+  }, [handleAuthFailure, storage, vaultManager]);
 
   useEffect(() => {
-    if (!syncEngine || !activeEntryPath) return;
-    
-    if (isNewEntryRef.current) {
-      isNewEntryRef.current = false;
+    if (!syncEngine) return;
+
+    const isEditorRoute = location.pathname === ROUTES.editor;
+    const isViewerRoute = location.pathname === ROUTES.viewer;
+
+    if ((isEditorRoute || isViewerRoute) && routeEntryPath) {
+      if (routeEntryPath !== activeEntryPath) {
+        isNewEntryRef.current = false;
+        setIsDraftMode(false);
+        setActiveEntryPath(routeEntryPath);
+      }
       return;
     }
 
-    // Load active entry
-    syncEngine.fetchEntry(activeEntryPath).then(entry => {
-      if (entry) {
+    if (isEditorRoute && !routeEntryPath) {
+      if (!isDraftMode) {
+        startDraftForDate(new Date());
+      }
+      return;
+    }
+
+    if (isViewerRoute && !routeEntryPath) {
+      navigate(buildEntriesRoute(currentDirectoryPath), { replace: true });
+    }
+  }, [
+    activeEntryPath,
+    currentDirectoryPath,
+    isDraftMode,
+    location.pathname,
+    navigate,
+    routeEntryPath,
+    startDraftForDate,
+    syncEngine,
+  ]);
+
+  useEffect(() => {
+    if (!syncEngine || location.pathname !== ROUTES.entries) return;
+
+    let cancelled = false;
+    setIsLoadingDirectory(true);
+
+    syncEngine.getDirectoryListing(routeDirectoryPath)
+      .then((listing) => {
+        if (cancelled) return;
+
+        setCurrentDirectoryPath(listing.currentPath);
+        setDirectoryFolders(listing.folders);
+        setDirectoryEntries(listing.entries);
+
+        if (listing.currentPath !== routeDirectoryPath) {
+          navigate(buildEntriesRoute(listing.currentPath), { replace: true });
+        }
+      })
+      .catch(handleAuthFailure)
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoadingDirectory(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [handleAuthFailure, location.pathname, navigate, routeDirectoryPath, syncEngine]);
+
+  useEffect(() => {
+    if (!syncEngine || !activeEntryPath) {
+      setIsLoadingEntry(false);
+      return;
+    }
+
+    if (isNewEntryRef.current) {
+      isNewEntryRef.current = false;
+      setIsLoadingEntry(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoadingEntry(true);
+
+    syncEngine.fetchEntry(activeEntryPath)
+      .then((entry) => {
+        if (cancelled || !entry) return;
+
+        const resolvedTitle = resolveEntryTitle(entry.title, entry.date);
+
+        setIsDraftMode(false);
         setActiveEntryId(entry.id);
-        setEditorTitle(entry.title);
+        setEditorTitle(resolvedTitle);
         setEditorContent(entry.plaintext);
         setEditorDate(entry.date);
-        
-        setInitialEditorTitle(entry.title);
+        setInitialEditorTitle(resolvedTitle);
         setInitialEditorContent(entry.plaintext);
         setInitialEditorDate(entry.date);
-      }
-    }).catch(err => {
-      if (err instanceof UnauthorizedError) handleLogout();
-    });
-  }, [activeEntryPath, syncEngine]);
+      })
+      .catch(handleAuthFailure)
+      .finally(() => {
+        if (!cancelled) setIsLoadingEntry(false);
+      });
 
-  const handleLogout = useCallback(() => {
-    clearCachedGoogleToken();
-    setStorage(null);
-    setVaultManager(null);
-    setSyncEngine(null);
-    setYears([]);
-    setEntriesByYear({});
-    setActiveEntryPath(null);
-    setActiveEntryId(null);
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeEntryPath, handleAuthFailure, syncEngine]);
+
+  const openNewEntry = useCallback((date: Date = new Date()) => {
+    if (!confirmDiscardChanges('You have unsaved changes. Are you sure you want to start a new entry?')) {
+      return;
+    }
+
+    startDraftForDate(date);
+    navigate(ROUTES.editor);
+  }, [confirmDiscardChanges, navigate, startDraftForDate]);
+
+  const openViewerEntry = useCallback((path: string) => {
+    if (path !== activeEntryPath && !confirmDiscardChanges('You have unsaved changes. Change entry anyway?')) {
+      return;
+    }
+
+    isNewEntryRef.current = false;
+    setIsDraftMode(false);
+    setActiveEntryPath(path);
+    navigate(buildViewerRoute(path));
+  }, [activeEntryPath, confirmDiscardChanges, navigate]);
+
+  const openEditorEntry = useCallback((path: string) => {
+    if (path !== activeEntryPath && !confirmDiscardChanges('You have unsaved changes. Change entry anyway?')) {
+      return;
+    }
+
+    isNewEntryRef.current = false;
+    setIsDraftMode(false);
+    setActiveEntryPath(path);
+    navigate(buildEditorRoute(path));
+  }, [activeEntryPath, confirmDiscardChanges, navigate]);
+
+  const openEntriesDirectory = useCallback((path: string) => {
+    navigate(buildEntriesRoute(path));
+  }, [navigate]);
 
   const handleCloseEntry = () => {
-    if (isDirty) {
-      if (!window.confirm("You have unsaved changes. Are you sure you want to close this entry?")) {
-        return;
-      }
+    if (!confirmDiscardChanges('You have unsaved changes. Are you sure you want to close this entry?')) {
+      return;
     }
-    setActiveEntryPath(null);
+    const nextDirectory = getParentDirectory(activeEntryPath);
+    resetEditorState();
+    navigate(buildEntriesRoute(nextDirectory));
   };
 
   const handleSave = async () => {
     if (!syncEngine || !activeEntryPath) return;
     setIsSaving(true);
+
     try {
+      const resolvedDate = editorDate || dayjs().format('YYYY-MM-DD_HH-mm');
+      const resolvedTitle = resolveEntryTitle(editorTitle, resolvedDate);
       const journalEntry: JournalEntry = {
         id: activeEntryId || crypto.randomUUID(),
-        title: editorTitle || 'Untitled Entry',
+        title: resolvedTitle,
         plaintext: editorContent || '',
-        date: editorDate,
+        date: resolvedDate,
         mediaIds: []
       };
+
       const newPath = await syncEngine.saveEntry(journalEntry);
-      
-      const year = newPath.split('/')[0];
-      setEntriesByYear(prev => {
-        const yearEntries = prev[year] || [];
-        if (!yearEntries.includes(newPath)) {
-          return { ...prev, [year]: [newPath, ...yearEntries].sort((a, b) => b.localeCompare(a)) };
-        }
-        return prev;
-      });
-      if (!years.includes(year)) {
-        setYears(prev => [...prev, year].sort((a,b) => b.localeCompare(a)));
-      }
+
+      setIsDraftMode(false);
       setActiveEntryPath(newPath);
+      setActiveEntryId(journalEntry.id);
+      setEditorTitle(resolvedTitle);
+      setEditorDate(resolvedDate);
       setInitialEditorTitle(journalEntry.title);
       setInitialEditorContent(journalEntry.plaintext);
-      setInitialEditorDate(journalEntry.date);
+      setInitialEditorDate(resolvedDate);
+
+      navigate(buildEditorRoute(newPath), { replace: true });
     } catch (e) {
-      console.error(e);
       if (e instanceof UnauthorizedError) {
         handleLogout();
       } else {
+        console.error(e);
         alert("Failed to save and sync entry.");
       }
     } finally {
@@ -239,197 +438,253 @@ export default function App() {
     }
   };
 
-  const handleCreateNew = () => {
-    if (!syncEngine) return;
-    
-    if (isDirty) {
-      if (!window.confirm("You have unsaved changes. Are you sure you want to start a new entry?")) {
-        closeNewEntryModal();
-        return;
-      }
+  const renderProtectedShell = (mode: 'editor' | 'entries' | 'viewer') => {
+    if (!storage) {
+      return <Navigate to={ROUTES.login} replace />;
     }
-    
-    const id = crypto.randomUUID();
-    const dateStr = dayjs(newEntryDate || new Date()).format('YYYY-MM-DD_HH-mm');
-    
-    setEditorTitle('');
-    setEditorContent('');
-    setEditorDate(dateStr);
-    
-    setInitialEditorTitle('');
-    setInitialEditorContent('');
-    setInitialEditorDate(dateStr);
-    
-    setActiveEntryId(id);
-    
-    const path = SyncEngine.getEntryPath(dateStr);
-    isNewEntryRef.current = true;
-    setActiveEntryPath(path);
-    closeNewEntryModal();
-  };
 
-  const handleYearToggle = async (year: string) => {
-    if (!entriesByYear[year]) {
-      const yearEntries = await syncEngine!.getEntriesForYear(year);
-      setEntriesByYear(prev => ({ ...prev, [year]: yearEntries }));
+    if (!vaultManager) {
+      return <Navigate to={ROUTES.unlock} replace />;
     }
-  };
 
-  if (!storage) return <AuthWall onAuthenticated={setStorage} />;
-  if (!vaultManager) return <VaultSetupWall storage={storage} onVaultReady={setVaultManager} onAuthError={handleLogout} />;
+    if (!syncEngine) {
+      return (
+        <Center style={{ height: '100vh' }}>
+          <Loader size="xl" variant="dots" />
+        </Center>
+      );
+    }
 
-  if (!syncEngine) {
     return (
-      <Center style={{ height: '100vh' }}>
-        <Loader size="xl" variant="dots" />
-      </Center>
+      <AppShell
+        header={{ height: 70 }}
+        navbar={{
+          width: 320,
+          breakpoint: 'sm',
+          collapsed: { mobile: !opened },
+        }}
+        padding="0"
+      >
+        <AppShell.Header style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }}>
+          <Group h="100%" px={6} justify="space-between">
+            <Group>
+              <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" />
+              <Text
+                size="xl"
+                fw={900}
+                variant="gradient"
+                gradient={{ from: 'indigo', to: 'cyan', deg: 45 }}
+                style={{ letterSpacing: '1px' }}
+              >
+                Silent Memoirs
+              </Text>
+            </Group>
+            <Group>
+              <Tooltip label="Logout & Disconnect">
+                <ActionIcon onClick={handleLogout} variant="light" color="red" size="lg" radius="md">
+                  <IconLogout size={20} stroke={1.5} />
+                </ActionIcon>
+              </Tooltip>
+              <Tooltip label="Toggle theme">
+                <ActionIcon onClick={toggleColorScheme} variant="default" size="lg" radius="md">
+                  {colorScheme === 'dark' ? <IconSun size={20} stroke={1.5} /> : <IconMoon size={20} stroke={1.5} />}
+                </ActionIcon>
+              </Tooltip>
+            </Group>
+          </Group>
+        </AppShell.Header>
+
+        <AppShell.Navbar p="sm" style={{ borderRight: '1px solid var(--mantine-color-default-border)', display: 'flex', flexDirection: 'column' }}>
+          <Button
+            variant="light"
+            color="indigo"
+            fullWidth
+            mb="md"
+            mt="md"
+            onClick={() => openNewEntry(new Date())}
+            leftSection={<IconPlus size={16} stroke={1.5} />}
+          >
+            New Entry
+          </Button>
+
+          <NavLink
+            label="Editor"
+            active={mode === 'editor'}
+            mb="xs"
+            onClick={() => {
+              if (activeEntryPath && !isDraftMode) {
+                openEditorEntry(activeEntryPath);
+                return;
+              }
+              if (mode !== 'editor' || routeEntryPath) {
+                openNewEntry(new Date());
+                return;
+              }
+              navigate(ROUTES.editor);
+            }}
+          />
+          <NavLink
+            label="All Entries"
+            active={mode === 'entries'}
+            mb="md"
+            onClick={() => {
+              if (!confirmDiscardChanges('You have unsaved changes. Continue to entries anyway?')) return;
+              navigate(buildEntriesRoute(currentDirectoryPath));
+            }}
+          />
+        </AppShell.Navbar>
+
+        <AppShell.Main bg="var(--mantine-color-body)">
+          <div style={{ height: 'calc(100vh - 70px)', display: 'flex', flexDirection: 'column' }}>
+            {mode === 'editor' && (
+              activeEntryPath ? (
+                <>
+                  <Flex gap="md" align="center" style={{ padding: '0.5rem', borderBottom: '1px solid var(--mantine-color-default-border)' }}>
+                    <TextInput
+                      value={editorTitle}
+                      onChange={(e) => setEditorTitle(e.currentTarget.value)}
+                      placeholder="Entry Title"
+                      variant="unstyled"
+                      size="xl"
+                      fw={700}
+                      style={{ flex: 1 }}
+                    />
+
+                    {isDraftMode ? (
+                      <DateInput
+                        value={editorDateValue}
+                        onChange={(value) => {
+                          if (!value) return;
+                          const nextDate = typeof value === 'string' ? new Date(value) : value;
+                          if (Number.isNaN(nextDate.getTime())) return;
+
+                          const nextDateValue = composeEditorDate(nextDate, editorDate);
+                          if (isDateSyncedEntryTitle(editorTitle, editorDate)) {
+                            setEditorTitle(buildDefaultEntryTitle(nextDateValue));
+                          }
+                          setEditorDate(nextDateValue);
+                        }}
+                        placeholder="Entry Date"
+                        valueFormat="YYYY-MM-DD"
+                        clearable={false}
+                        w={170}
+                        size="xs"
+                      />
+                    ) : (
+                      <Text size="xs" c="dimmed" pt={5}>{editorDate}</Text>
+                    )}
+
+                    <Group gap={6}>
+                      <Tooltip label="Save & Sync">
+                        <ActionIcon loading={isSaving} onClick={handleSave} color="teal" variant="light" size="lg">
+                          <IconDeviceFloppy size={20} />
+                        </ActionIcon>
+                      </Tooltip>
+                      <Tooltip label="Close / Cancel">
+                        <ActionIcon onClick={handleCloseEntry} variant="light" color="red" size="lg">
+                          <IconX size={20} />
+                        </ActionIcon>
+                      </Tooltip>
+                    </Group>
+                  </Flex>
+
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                    {isLoadingEntry ? (
+                      <Center style={{ flex: 1 }}>
+                        <Loader variant="dots" />
+                      </Center>
+                    ) : (
+                      <Editor
+                        key={`${activeEntryPath}-${isDraftMode ? 'draft' : 'entry'}`}
+                        value={editorContent}
+                        onChange={(value) => setEditorContent(value)}
+                      />
+                    )}
+                  </div>
+                </>
+              ) : (
+                <Center style={{ flex: 1 }}>
+                  <Text c="dimmed">Start a new entry to begin writing.</Text>
+                </Center>
+              )
+            )}
+
+            {mode === 'entries' && (
+              <EntriesList
+                isLoading={isLoadingDirectory}
+                currentPath={currentDirectoryPath}
+                folders={directoryFolders}
+                entries={directoryEntries}
+                onOpenFolder={openEntriesDirectory}
+                onOpenEntry={openViewerEntry}
+              />
+            )}
+
+            {mode === 'viewer' && (
+              isLoadingEntry ? (
+                <Center style={{ flex: 1 }}>
+                  <Loader variant="dots" />
+                </Center>
+              ) : activeEntryPath ? (
+                <Viewer
+                  title={editorTitle}
+                  content={editorContent}
+                  date={editorDate}
+                  onEdit={() => openEditorEntry(activeEntryPath)}
+                />
+              ) : (
+                <Center style={{ flex: 1 }}>
+                  <Text c="dimmed">Select an entry to view.</Text>
+                </Center>
+              )
+            )}
+          </div>
+        </AppShell.Main>
+      </AppShell>
     );
-  }
+  };
 
   return (
-    <AppShell
-      header={{ height: 70 }}
-      navbar={{
-        width: 320,
-        breakpoint: 'sm',
-        collapsed: { mobile: !opened },
-      }}
-      padding="0"
-    >
-      <AppShell.Header style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }}>
-        <Group h="100%" px={6} justify="space-between">
-          <Group>
-            <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" />
-            <Text
-              size="xl"
-              fw={900}
-              variant="gradient"
-              gradient={{ from: 'indigo', to: 'cyan', deg: 45 }}
-              style={{ letterSpacing: '1px' }}
-            >
-              Silent Memoirs
-            </Text>
-          </Group>
-          <Group>
-            <Tooltip label="Logout & Disconnect">
-              <ActionIcon onClick={handleLogout} variant="light" color="red" size="lg" radius="md">
-                <IconLogout size={20} stroke={1.5} />
-              </ActionIcon>
-            </Tooltip>
-            <Tooltip label="Toggle theme">
-              <ActionIcon onClick={toggleColorScheme} variant="default" size="lg" radius="md">
-                {colorScheme === 'dark' ? <IconSun size={20} stroke={1.5} /> : <IconMoon size={20} stroke={1.5} />}
-              </ActionIcon>
-            </Tooltip>
-          </Group>
-        </Group>
-      </AppShell.Header>
-
-      <AppShell.Navbar p="sm" style={{ borderRight: '1px solid var(--mantine-color-default-border)', display: 'flex', flexDirection: 'column' }}>
-        <Button variant="light" color="indigo" fullWidth mb="md" mt="md" onClick={openNewEntryModal} leftSection={<IconPlus size={16} stroke={1.5} />}>
-          New Entry
-        </Button>
-        <Text c="dimmed" size="xs" fw={700} mb="xs" px="xs">YOUR ENTRIES</Text>
-        
-        <ScrollArea style={{ flex: 1 }}>
-          {years.length === 0 && <Text c="dimmed" size="sm" ta="center" mt="xl">No entries yet.</Text>}
-          {years.map((year) => (
-            <NavLink
-              key={year}
-              label={year}
-              fw={700}
-              childrenOffset={28}
-              onClick={() => handleYearToggle(year)}
-            >
-              {entriesByYear[year] ? (
-                entriesByYear[year].length === 0 ? (
-                  <Text size="xs" c="dimmed" p="xs">Empty</Text>
-                ) : (
-                  entriesByYear[year].map(path => {
-                    const filename = path.split('/').pop() || '';
-                    const label = filename.replace('.age', '').replace('_', ' '); // '2024-04-08 13-45'
-                    return (
-                      <NavLink
-                        key={path}
-                        active={path === activeEntryPath}
-                        label={label}
-                        onClick={() => {
-                          if (path !== activeEntryPath && isDirty) {
-                            if (!window.confirm("You have unsaved changes. Change entry anyway?")) return;
-                          }
-                          setActiveEntryPath(path);
-                        }}
-                        color="indigo"
-                        variant="filled"
-                        style={{ borderRadius: 'var(--mantine-radius-md)', marginBottom: '4px' }}
-                      />
-                    );
-                  })
-                )
-              ) : (
-                <Text size="xs" c="dimmed" p="xs">Loading...</Text>
-              )}
-            </NavLink>
-          ))}
-        </ScrollArea>
-      </AppShell.Navbar>
-
-      <AppShell.Main bg="var(--mantine-color-body)">
-        <div style={{ height: 'calc(100vh - 70px)', display: 'flex', flexDirection: 'column' }}>
-          {activeEntryPath ? (
-            <>
-              <Flex gap="md" align="center" style={{ padding: '0.5rem', borderBottom: '1px solid var(--mantine-color-default-border)' }}>
-                <TextInput 
-                  value={editorTitle} 
-                  onChange={(e) => setEditorTitle(e.currentTarget.value)}
-                  placeholder="Entry Title"
-                  variant="unstyled"
-                  size="xl"
-                  fw={700}
-                  style={{ flex: 1 }}
-                />
-                <Text size="xs" c="dimmed" pt={5}>{editorDate}</Text>
-                <Group gap={6}>
-                  <Tooltip label="Save & Sync">
-                    <ActionIcon loading={isSaving} onClick={handleSave}  color="teal" variant="light" size="lg">
-                      <IconDeviceFloppy size={20} />
-                    </ActionIcon>
-                  </Tooltip>
-                  <Tooltip label="Close / Cancel">
-                    <ActionIcon onClick={handleCloseEntry} variant="light" color="red" size="lg">
-                      <IconX size={20} />
-                    </ActionIcon>
-                  </Tooltip>
-                </Group>
-              </Flex>
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                <Editor
-                  key={activeEntryPath}
-                  value={editorContent}
-                  onChange={(val) => setEditorContent(val)}
-                />
-              </div>
-            </>
-          ) : (
-            <Center style={{ flex: 1 }}>
-              <Text c="dimmed">Select an entry from the sidebar or create a new one.</Text>
-            </Center>
-          )}
-        </div>
-      </AppShell.Main>
-
-      <Modal opened={newEntryModalOpened} onClose={closeNewEntryModal} title="Create New Entry" centered>
-        <DateInput
-          label="Entry Date"
-          description="You can backdate your journal entries"
-          value={newEntryDate}
-          onChange={(val: any) => setNewEntryDate(val)}
-          mb="md"
+    <>
+      <Routes>
+        <Route
+          path={ROUTES.login}
+          element={
+            storage ? (
+              <Navigate to={vaultManager ? (activeEntryPath ? buildEditorRoute(activeEntryPath) : ROUTES.editor) : ROUTES.unlock} replace />
+            ) : (
+              <AuthWall onAuthenticated={setStorage} />
+            )
+          }
         />
-        <Button onClick={handleCreateNew} fullWidth>Start Writing</Button>
-      </Modal>
+        <Route
+          path={ROUTES.unlock}
+          element={
+            !storage ? (
+              <Navigate to={ROUTES.login} replace />
+            ) : vaultManager ? (
+              <Navigate to={activeEntryPath ? buildEditorRoute(activeEntryPath) : ROUTES.editor} replace />
+            ) : (
+              <VaultSetupWall storage={storage} onVaultReady={setVaultManager} onAuthError={handleLogout} />
+            )
+          }
+        />
+        <Route path={ROUTES.editor} element={renderProtectedShell('editor')} />
+        <Route path={ROUTES.entries} element={renderProtectedShell('entries')} />
+        <Route path={ROUTES.viewer} element={renderProtectedShell('viewer')} />
+        <Route path="/" element={<Navigate to={ROUTES.editor} replace />} />
+        <Route path="*" element={<Navigate to={ROUTES.editor} replace />} />
+      </Routes>
 
-      <Modal opened={inactivityModalOpened} onClose={() => {}} title="Inactivity Warning" centered closeOnClickOutside={false} closeOnEscape={false} withCloseButton={false}>
+      <Modal
+        opened={inactivityModalOpened}
+        onClose={() => {}}
+        title="Inactivity Warning"
+        centered
+        closeOnClickOutside={false}
+        closeOnEscape={false}
+        withCloseButton={false}
+      >
         <Text mb="md">
           Your vault will lock automatically in <b>{countdown} seconds</b> due to inactivity.
         </Text>
@@ -441,6 +696,6 @@ export default function App() {
           <Button onClick={() => { setLastActive(Date.now()); closeInactivityModal(); }}>Continue Session</Button>
         </Group>
       </Modal>
-    </AppShell>
+    </>
   );
 }
