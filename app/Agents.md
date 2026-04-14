@@ -1,92 +1,158 @@
 # Silent Memoirs - Agent & Developer Onboarding Guide
 
-Welcome to the **Silent Memoirs** (Secure Journal) repository. This document serves as the primary context map for AI agents (Gemini, Copilot, etc.) and human developers joining the project. 
+Welcome to the Silent Memoirs repository. This file is the primary context map for AI agents and human developers. Read this before proposing or implementing changes.
 
-It explicitly outlines the architectural constraints, technologies, and cryptographic workflows of the application. **Agents should read this document first before proposing any changes.**
-
----
-
-## 1. Project Philosophy & Constraints
-
-Silent Memoirs is a strictly **Local-First, Bring Your Own Storage (BYOS), Privacy-Preserving PWA**.
-There is **no backend, no database, and no server-side logic**. The application acts merely as a stateless client-side engine that encrypts markdown text and blindly syncs encrypted blobs to the user's personal cloud storage.
-
-**Core Directives for Agents:**
-1. **Data Sovereignty:** The user owns their keys. The app must never hold the only key to the data. The encryption format (`age`) must remain standard so the user can decrypt their `.age` files locally using CLI tools if the app disappears.
-2. **Statelessness:** Never assume local state is permanent. The source of truth is always the remote Google Drive `silent-memoirs/` folder.
-3. **No Backends:** Do not propose adding Firebase Firestore, Supabase, AWS, or any API routes. The only remote connection is to the Google Drive API.
+The app is a local-first encrypted journal client. There is no backend.
 
 ---
 
-## 2. Technology Stack
+## 1. Repository Layout (Root-Level Contract)
 
-- **Framework:** React + TypeScript + Vite
-- **UI Library:** Mantine UI (`@mantine/core`, `@mantine/dates`)
-- **Editor:** `@uiw/react-md-editor`
-- **Cloud Provider:** Google Drive API (`@react-oauth/google`)
-- **Cryptography:** `@kanru/rage-wasm` (Rust-based `age` encryption compiled to WASM), Web Crypto API (PBKDF2)
-- **Authentication:** WebAuthn (specifically the PRF extension)
+Treat each root directory with strict boundaries:
 
----
+- `app/`: The actual product code (React + TypeScript + Vite). All implementation work for the running app happens here.
+- `funnel/`: Product and feature planning docs. This is reference material, not executable app logic.
+- `Notes/`: Developer scratch pad. Ignore this for architecture decisions, production implementation, and code review unless explicitly asked.
 
-## 3. Cryptography & Vault Architecture
-
-The Vault is designed to seamlessly derive encryption keys without storing them.
-
-### Data Structures
-1. **Age Identity (`currentIdentity`):** The primary X25519 keypair for the vault.
-   - `publicKey`: Starts with `age1...`.
-   - `secretKey`: Starts with `AGE-SECRET-KEY-...` (This is the **Recovery Key**).
-2. `vault_pub.txt`: A plaintext file stored in Google Drive containing the `publicKey`.
-3. `vault_key.age`: An encrypted file stored in Google Drive containing the `secretKey`.
-
-### The "Keyring" Unlocking Process
-To unlock the vault, the app needs to decrypt the `vault_key.age` to get the `secretKey`. It does this by deriving a symmetric wrapping key from the user's hardware:
-- **Primary Method (WebAuthn PRF):** Generates a deterministic 32-byte salt from the user's hardware authenticator (FaceID, Windows Hello, YubiKey).
-- **Fallback Method (Password):** If the browser/OS does not support the WebAuthn PRF extension, it falls back to driving a key using the Web Crypto API `PBKDF2` algorithm and a manual password.
-
-The wrapping key (derived from PRF or Password) surrounds the underlying `secretKey` via standard `age` passphrase encryption.
+Important:
+- Do not wire app behavior to `Notes/`.
+- Do not treat `funnel/` docs as guaranteed implementation truth. Verify against `app/src`.
 
 ---
 
-## 4. Storage & Sync Engine
+## 2. Command Discipline (Critical)
 
-### Google Drive Integration (`storage.ts`)
-- Uses OAuth 2.0 with the `https://www.googleapis.com/auth/drive.file` scope.
-- **Namespacing:** The `GoogleDriveStorage` class automatically prepends `silent-memoirs/` to all API requests. *Never manually prepend this folder in component logic.*
-- **Session Persistence:** The `access_token` is cached to `localStorage` in `AuthWall.tsx` to survive page reloads. 401 Unauthorized errors trigger a global app state reset, forcing a clean re-login.
+All app-related terminal commands must run inside `app/`.
 
-### The Sync Engine (`sync.ts`)
-- **Index (`metadata.json.age`):** An encrypted JSON map of UUIDs to timestamps/metadata. This file prevents the app from needing to download every single entry to construct the sidebar.
-- **Entries (`YYYY/UUID.age`):** Individual journal entries are encrypted as separate `.age` blobs and structured nicely in year-based subdirectories within Google Drive.
-- **Tombstoning:** Deleting an entry does not instantly wipe it remote; it flags it as `tombstoned` in the metadata index first to handle conflict resolution across multiple devices.
+From repo root, always use:
 
----
+```bash
+cd app
+npm install
+npm run dev
+npm run build
+npm run lint
+```
 
-## 5. Development Conventions
-
-1. **Routing:** We are heavily leveraging React conditional rendering (`activeEntryId`, `storage`, `vaultManager`). There is no complex router setup like `react-router-dom` yet. Keep navigation state simple.
-2. **Alerts & Toasts:** Mantine UI is strictly enforced for components. Avoid standard `window.alert` where possible.
-3. **Handling Asynchronous WASM:** Be incredibly careful when invoking `@kanru/rage-wasm` methods. Passphrases are `string`, but inputs/outputs must mapped correctly via `TextEncoder`/`TextDecoder`. 
-4. **WASM Destructuring Trap:** The `keygen()` function from the `age` WASM package returns the tuple `[SecretKey, PublicKey]` in that exact order. *Do not swap them accidentally.*
+Do not run npm, Vite, lint, or build commands from the repository root.
 
 ---
 
-## 6. Development workflow. 
+## 3. Project Philosophy & Constraints
 
-- After every major change, run `npm run build` to ensure the application is still buildable.
+Silent Memoirs is strictly local-first, BYOS, and privacy-preserving.
 
-## 7. Onboarding & Setup
+Core directives:
+1. Data sovereignty: users own keys and encrypted data.
+2. Standard crypto portability: encrypted files must remain decryptable with standard `age` tooling.
+3. No backend: no database, API routes, or server-side business logic.
+4. Stateless mindset: remote Google Drive content under `silent-memoirs/` is the source of truth.
 
-To boot this project locally:
+---
 
-1. Create a `secure-journal/.env` file.
-2. Add your Google OAuth Client ID:
+## 4. Technology Stack
+
+- Framework: React + TypeScript + Vite
+- UI: Mantine (`@mantine/core`, `@mantine/dates`, `@mantine/hooks`)
+- Routing: `react-router-dom` (BrowserRouter)
+- Editor: `@uiw/react-md-editor`
+- Cloud storage: Google Drive API via OAuth (`@react-oauth/google`)
+- Crypto: `@kanru/rage-wasm` (`age`) + Web Crypto API (PBKDF2 fallback)
+- PWA: `vite-plugin-pwa` (`registerType: autoUpdate`)
+
+---
+
+## 5. Routing Model (Current)
+
+Routing is now URL-driven using `react-router-dom`, not only conditional rendering.
+
+- Route constants are centralized in `src/lib/routes.ts`.
+- App routes:
+  - `/login`
+  - `/unlock`
+  - `/editor`
+  - `/entries`
+  - `/viewer`
+- Query params:
+  - `?e=` stores encoded entry path for editor/viewer routes.
+  - `?dir=` stores encoded directory path for entries explorer route.
+- Use helpers from `src/lib/routes.ts` (`buildEditorRoute`, `buildViewerRoute`, `buildEntriesRoute`) rather than hand-building URLs.
+- Unknown routes redirect to `/editor`.
+
+Guard behavior:
+- No storage session -> redirect to `/login`.
+- Storage exists but vault locked -> redirect to `/unlock`.
+- Protected routes require both storage and unlocked vault.
+
+---
+
+## 6. Vault & Cryptography
+
+Vault identity is an X25519 `age` identity:
+
+- `publicKey`: `age1...`
+- `secretKey`: `AGE-SECRET-KEY-...` (recovery key shown to the user)
+
+Remote files in Drive:
+- `vault_pub.txt`: plaintext public key
+- `vault_key.age`: secret key wrapped with passphrase encryption
+
+Unlock flow:
+- Preferred: WebAuthn PRF-derived wrapping key.
+- Fallback: password-derived key via PBKDF2 (`SHA-256`, 600000 iterations).
+
+Critical WASM note:
+- `keygen()` returns `[SecretKey, PublicKey]` in that order.
+
+---
+
+## 7. Storage & Sync Engine (Current Behavior)
+
+Google Drive storage (`src/lib/storage.ts`):
+- Uses scope `https://www.googleapis.com/auth/drive.file`.
+- Automatically namespaces all paths under `silent-memoirs/`.
+- Caches OAuth token in localStorage key `google_access_token`.
+- 401 responses should trigger logout/reset flow.
+
+Sync engine (`src/lib/sync.ts`):
+- Index file is `manifest.age` (encrypted JSON manifest).
+- Entry files follow `YYYY/YYYY-MM-DD_HH-mm.age`.
+- Directory explorer is manifest-driven (`EntryDirectory` + `EntryMetadata`).
+- If manifest is missing, the app rebuilds it by scanning year folders.
+- Current delete behavior is hard delete + manifest rewrite (no tombstone workflow at this time).
+
+---
+
+## 8. Session & Security Behavior
+
+- Vault auto-locks after 10 minutes of inactivity.
+- Warning modal appears in the final 30 seconds before auto-lock.
+- Visibility return checks can immediately lock if timeout elapsed while backgrounded.
+
+---
+
+## 9. Development Conventions
+
+1. Keep using Mantine components as the UI baseline.
+2. Keep route and query handling centralized in `src/lib/routes.ts`.
+3. Be careful with WASM input/output types (`TextEncoder` / `TextDecoder` where needed).
+4. Never manually prepend `silent-memoirs/` in component/business logic.
+5. After major changes, run `npm run build` from `app/`.
+
+---
+
+## 10. Local Setup
+
+1. Move into the app directory:
+   ```bash
+   cd app
+   ```
+2. Create `app/.env`:
    ```env
    VITE_GOOGLE_CLIENT_ID="<your-google-oauth-client-id>"
    ```
-   *(Ensure your Google Cloud Console has `http://localhost:5173` added to Authorized JavaScript origins).*
-3. Install and run:
+3. Ensure `http://localhost:5173` is in Google OAuth authorized JavaScript origins.
+4. Install and run:
    ```bash
    npm install
    npm run dev
