@@ -1,9 +1,6 @@
-import { ActionIcon, Box, Divider, Flex, Group, Menu, Tooltip, useMantineColorScheme } from '@mantine/core';
-import { useMediaQuery } from '@mantine/hooks';
+import { ActionIcon, Box, Divider, Flex, Group, Menu, Switch, Text, Tooltip, useMantineColorScheme } from '@mantine/core';
 import {
   IconBold,
-  IconColumns,
-  IconEdit,
   IconEye,
   IconH1,
   IconH2,
@@ -16,13 +13,15 @@ import {
   IconListNumbers,
   IconMaximize,
   IconMinimize,
+  IconPencil,
   IconPhoto,
   IconQuote,
   IconStrikethrough,
   IconTable
 } from '@tabler/icons-react';
-import MDEditor, { commands, handleKeyDown, TextAreaCommandOrchestrator } from '@uiw/react-md-editor';
+import MDEditor, { commands, getCommands, handleKeyDown, shortcuts, TextAreaCommandOrchestrator } from '@uiw/react-md-editor';
 import React, { useEffect, useRef, useState } from 'react';
+import { getRandomEditorPlaceholder, getWordCount } from '../lib/editorUtils';
 
 interface EditorProps {
   value: string;
@@ -30,16 +29,16 @@ interface EditorProps {
 }
 
 export function Editor({ value, onChange }: EditorProps) {
-  const [previewMode, setPreviewMode] = useState<'edit' | 'live' | 'preview'>('edit');
+  const [previewMode, setPreviewMode] = useState<'edit' | 'preview'>('edit');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const { colorScheme } = useMantineColorScheme();
-  const isMobile = useMediaQuery('(max-width: 768px)');
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const orchestratorRef = useRef<TextAreaCommandOrchestrator | null>(null);
 
   // Local state for blazing fast typing
   const [localValue, setLocalValue] = useState(value);
+  const [editorPlaceholder] = useState(() => getRandomEditorPlaceholder());
   const debounceRef = useRef<number | null>(null);
   const lastNotifiedValue = useRef(value);
 
@@ -53,8 +52,8 @@ export function Editor({ value, onChange }: EditorProps) {
 
   // Sync debounced changes back to parent
   const debouncedOnChange = (newVal: string) => {
-    if (debounceRef.current) window.clearTimeout(debounceRef.current);
-    debounceRef.current = window.setTimeout(() => {
+    if (debounceRef.current) globalThis.clearTimeout(debounceRef.current);
+    debounceRef.current = globalThis.setTimeout(() => {
       lastNotifiedValue.current = newVal;
       onChange(newVal);
     }, 750); // 750ms debounce
@@ -66,15 +65,10 @@ export function Editor({ value, onChange }: EditorProps) {
     }
   }, []);
 
-  // Update preview mode if mobile user had selected 'live'
-  useEffect(() => {
-    if (isMobile && previewMode === 'live') {
-      setPreviewMode('edit');
-    }
-  }, [isMobile, previewMode]);
-
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     handleKeyDown(e, 2, false);
+    if(orchestratorRef.current)
+      shortcuts(e, getCommands(), orchestratorRef.current);
   };
 
   const handleTextAreaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -84,7 +78,7 @@ export function Editor({ value, onChange }: EditorProps) {
 
   const handleBlur = () => {
     // Flush changes immediately when leaving the editor (safeguards clicks on Save/Close)
-    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    if (debounceRef.current) globalThis.clearTimeout(debounceRef.current);
     lastNotifiedValue.current = localValue;
     onChange(localValue);
   };
@@ -99,7 +93,7 @@ export function Editor({ value, onChange }: EditorProps) {
 
   const toolbarButton = (icon: React.ReactNode, label: string, command: any) => (
     <Tooltip label={label} withArrow position="bottom" openDelay={300}>
-      <ActionIcon variant="subtle" color="gray" onClick={() => executeCommand(command)}>
+      <ActionIcon variant="subtle" color="gray" onClick={() => executeCommand(command)} disabled={previewMode === "preview"}>
         {icon}
       </ActionIcon>
     </Tooltip>
@@ -132,10 +126,10 @@ export function Editor({ value, onChange }: EditorProps) {
             {toolbarButton(<IconItalic size={18} stroke={1.5} />, 'Italic', commands.italic)}
             {toolbarButton(<IconStrikethrough size={18} stroke={1.5} />, 'Strikethrough', commands.strikethrough)}
             
-            <Menu shadow="md" width={150} withinPortal>
+            <Menu shadow="md" width={150} withinPortal >
               <Menu.Target>
                 <Tooltip label="Headings" withArrow position="bottom" openDelay={300}>
-                  <ActionIcon variant="subtle" color="gray">
+                  <ActionIcon variant="subtle" color="gray" disabled={previewMode === "preview"}>
                     <IconHeading size={18} stroke={1.5} />
                   </ActionIcon>
                 </Tooltip>
@@ -162,37 +156,27 @@ export function Editor({ value, onChange }: EditorProps) {
           </Group>
 
           <Group gap={4} wrap="nowrap">
-            <Group gap={4} wrap="nowrap" style={{ borderRight: '1px solid var(--mantine-color-default-border)', paddingRight: 'var(--mantine-spacing-xs)' }}>
-              <Tooltip label="Edit" withArrow position="bottom" openDelay={300}>
-                <ActionIcon variant={previewMode === 'edit' ? 'light' : 'subtle'} color="indigo" onClick={() => setPreviewMode('edit')}>
-                  <IconEdit size={18} stroke={1.5} />
-                </ActionIcon>
-              </Tooltip>
-              {!isMobile && (
-                <Tooltip label="Edit & Preview" withArrow position="bottom" openDelay={300}>
-                  <ActionIcon variant={previewMode === 'live' ? 'light' : 'subtle'} color="indigo" onClick={() => setPreviewMode('live')}>
-                    <IconColumns size={18} stroke={1.5} />
-                  </ActionIcon>
-                </Tooltip>
-              )}
-              <Tooltip label="Preview" withArrow position="bottom" openDelay={300}>
-                <ActionIcon variant={previewMode === 'preview' ? 'light' : 'subtle'} color="indigo" onClick={() => setPreviewMode('preview')}>
-                  <IconEye size={18} stroke={1.5} />
-                </ActionIcon>
-              </Tooltip>
-            </Group>
-
+            <Switch
+              size="md"
+              color="indigo"
+              checked={previewMode === "edit"}
+              onChange={(event) => setPreviewMode(event.currentTarget.checked ? 'edit' : 'preview')}
+              onLabel={<IconPencil size={12} stroke={2.5} />}
+              offLabel={<IconEye size={12} stroke={2.5} />}
+            />
             <Tooltip label={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'} withArrow position="bottom" openDelay={300}>
               <ActionIcon variant="subtle" color="gray" onClick={() => setIsFullscreen(!isFullscreen)}>
                 {isFullscreen ? <IconMinimize size={18} stroke={1.5} /> : <IconMaximize size={18} stroke={1.5} />}
               </ActionIcon>
             </Tooltip>
+            <Divider orientation='vertical' mx="xs" />
+            <Text size='xs' c="dimmed">{getWordCount(localValue)} words</Text>
           </Group>
         </Group>
       </Box>
 
       <Flex style={{ flex: 1, overflow: 'hidden' }}>
-        {(previewMode === 'edit' || previewMode === 'live') && (
+        {(previewMode === 'edit') && (
           <Box style={{ flex: 1, height: '100%', position: 'relative' }}>
             <textarea
               ref={textareaRef}
@@ -213,16 +197,12 @@ export function Editor({ value, onChange }: EditorProps) {
                 fontSize: '14px',
                 lineHeight: 1.5,
               }}
-              placeholder="Write your entry here..."
+              placeholder={editorPlaceholder}
             />
           </Box>
         )}
 
-        {previewMode === 'live' && (
-          <Divider orientation="vertical" />
-        )}
-
-        {(previewMode === 'preview' || previewMode === 'live') && (
+        {(previewMode === 'preview') && (
           <Box
             style={{
               flex: 1,
