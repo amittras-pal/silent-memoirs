@@ -256,6 +256,11 @@ export default function App() {
     const isViewerRoute = location.pathname === ROUTES.viewer;
 
     if ((isEditorRoute || isViewerRoute) && routeEntryPath) {
+      // While a new draft is being initialized, ignore stale route-entry reconciliation.
+      if (isNewEntryRef.current) {
+        return;
+      }
+
       if (routeEntryPath !== activeEntryPath) {
         isNewEntryRef.current = false;
         setIsDraftMode(false);
@@ -567,6 +572,7 @@ export default function App() {
                         placeholder="Entry Date"
                         valueFormat="YYYY-MM-DD"
                         clearable={false}
+                        maxDate={new Date()}
                         w={170}
                         size="xs"
                       />
