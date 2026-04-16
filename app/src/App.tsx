@@ -12,9 +12,27 @@ import { EntriesList } from './components/EntriesList';
 import { VaultSetupWall } from './components/VaultSetupWall';
 import { Viewer } from './components/Viewer';
 import { buildDefaultEntryTitle, isDateSyncedEntryTitle, parseEntryDate, resolveEntryTitle } from './lib/entryTitle';
+import {
+  blobToUint8Array,
+  clearMediaImageCache,
+  clearMediaUploadPathCursor,
+  createEncryptedMediaPathAllocator,
+  encryptAndUploadImage,
+  extractEncryptedMediaPaths,
+  extractPendingMediaIds,
+  replacePendingMediaPaths,
+} from './lib/media';
 import { buildEditorRoute, buildEntriesRoute, buildViewerRoute, decodeDirectoryPath, decodeEntryPath, ROUTES } from './lib/routes';
 import { type GoogleDriveStorage, type JournalEntry, UnauthorizedError } from './lib/storage';
-import { type EntryDirectory, type EntryMetadata, SyncEngine } from './lib/sync';
+import {
+  clearAllStagedMedia,
+  deleteStagedMediaForEntry,
+  deleteUnreferencedStagedMediaForEntry,
+  deleteUploadedStagedMediaForEntry,
+  getStagedMediaByPendingIds,
+  markStagedMediaUploadedPath,
+} from './lib/stagedMedia';
+import { type EntryDirectory, type EntryMetadata, type MediaFileMetadata, SyncEngine } from './lib/sync';
 import { VaultManager } from './lib/vault';
 
 import '@mantine/dates/styles.css';
@@ -52,6 +70,7 @@ export default function App() {
   const [currentDirectoryPath, setCurrentDirectoryPath] = useState('');
   const [directoryFolders, setDirectoryFolders] = useState<EntryDirectory[]>([]);
   const [directoryEntries, setDirectoryEntries] = useState<EntryMetadata[]>([]);
+  const [directoryMedia, setDirectoryMedia] = useState<MediaFileMetadata[]>([]);
   const [isLoadingDirectory, setIsLoadingDirectory] = useState(false);
   const [activeEntryPath, setActiveEntryPath] = useState<string | null>(null);
   const [activeEntryId, setActiveEntryId] = useState<string | null>(null);
@@ -61,6 +80,7 @@ export default function App() {
   const [editorContent, setEditorContent] = useState<string>('');
   const [editorDate, setEditorDate] = useState<string>('');
   const [isDraftMode, setIsDraftMode] = useState(false);
+  const [sessionEditableEntryPath, setSessionEditableEntryPath] = useState<string | null>(null);
   const [isLoadingEntry, setIsLoadingEntry] = useState(false);
   
   // Track dirty state
@@ -72,9 +92,11 @@ export default function App() {
 
   // Route-entry state bridge
   const isNewEntryRef = useRef(false);
+  const skipNextEntryFetchPathRef = useRef<string | null>(null);
+  const allowNextEditorRoutePathRef = useRef<string | null>(null);
   
   // Inactivity & Lock State
-  const [lastActive, setLastActive] = useState<number>(Date.now());
+  const lastActiveRef = useRef<number>(Date.now());
   const [inactivityModalOpened, { open: openInactivityModal, close: closeInactivityModal }] = useDisclosure(false);
   const [countdown, setCountdown] = useState(30);
 
@@ -92,6 +114,13 @@ export default function App() {
     return parseEntryDate(editorDate);
   }, [editorDate]);
 
+  const getResumeRoute = useCallback(() => {
+    if (activeEntryPath) {
+      return isDraftMode ? buildEditorRoute(activeEntryPath) : buildViewerRoute(activeEntryPath);
+    }
+    return ROUTES.editor;
+  }, [activeEntryPath, isDraftMode]);
+
   const isDirty = activeEntryPath !== null && (
     editorTitle !== initialEditorTitle ||
     editorContent !== initialEditorContent ||
@@ -99,6 +128,7 @@ export default function App() {
   );
 
   const resetEditorState = useCallback(() => {
+    allowNextEditorRoutePathRef.current = null;
     setActiveEntryPath(null);
     setActiveEntryId(null);
     setEditorTitle('');
@@ -108,6 +138,7 @@ export default function App() {
     setInitialEditorContent('');
     setInitialEditorDate('');
     setIsDraftMode(false);
+    setSessionEditableEntryPath(null);
   }, []);
 
   const confirmDiscardChanges = useCallback((message: string): boolean => {
@@ -122,8 +153,10 @@ export default function App() {
     const defaultTitle = buildDefaultEntryTitle(dateStr);
 
     isNewEntryRef.current = true;
+    allowNextEditorRoutePathRef.current = null;
     setIsLoadingEntry(false);
     setIsDraftMode(true);
+    setSessionEditableEntryPath(null);
     setActiveEntryPath(path);
     setActiveEntryId(id);
     setEditorTitle(defaultTitle);
@@ -135,6 +168,9 @@ export default function App() {
   }, []);
 
   const handleLogout = useCallback(() => {
+    clearMediaImageCache();
+    clearMediaUploadPathCursor();
+    void clearAllStagedMedia().catch((error) => console.error('Failed to clear staged media on logout', error));
     clearCachedGoogleToken();
     setStorage(null);
     setVaultManager(null);
@@ -142,6 +178,7 @@ export default function App() {
     setCurrentDirectoryPath('');
     setDirectoryFolders([]);
     setDirectoryEntries([]);
+    setDirectoryMedia([]);
     setIsLoadingDirectory(false);
     setIsSaving(false);
     resetEditorState();
@@ -174,7 +211,7 @@ export default function App() {
     let timeout: ReturnType<typeof setTimeout> | null = null;
     const throttledUpdate = () => {
       if (!timeout) {
-        setLastActive(Date.now());
+        lastActiveRef.current = Date.now();
         timeout = setTimeout(() => {
           timeout = null;
         }, 1000);
@@ -191,17 +228,43 @@ export default function App() {
   }, []);
 
   const handleLockVault = useCallback(() => {
+    clearMediaImageCache();
+    clearMediaUploadPathCursor();
+    void clearAllStagedMedia().catch((error) => console.error('Failed to clear staged media on vault lock', error));
     setVaultManager(null);
     setSyncEngine(null);
+    setSessionEditableEntryPath(null);
     closeInactivityModal();
     navigate(ROUTES.unlock, { replace: true });
   }, [closeInactivityModal, navigate]);
 
   useEffect(() => {
+    if (location.pathname !== ROUTES.editor) {
+      allowNextEditorRoutePathRef.current = null;
+    }
+
+    if (location.pathname === ROUTES.editor) return;
+    if (!sessionEditableEntryPath) return;
+
+    // Leaving editor ends the temporary mutable window for an already-saved entry.
+    setSessionEditableEntryPath(null);
+  }, [location.pathname, sessionEditableEntryPath]);
+
+  const discardStagedForEntry = useCallback(async (entryPath: string | null) => {
+    if (!entryPath || !storage) return;
+
+    try {
+      await deleteUploadedStagedMediaForEntry(entryPath, storage);
+    } catch (error) {
+      console.error('Failed to discard staged media for entry', entryPath, error);
+    }
+  }, [storage]);
+
+  useEffect(() => {
     if (!vaultManager) return; // Only track if unlocked
 
     const interval = setInterval(() => {
-      const idleTime = Date.now() - lastActive;
+      const idleTime = Date.now() - lastActiveRef.current;
       
       // 10 minutes total timeout. Show modal at 9m 30s.
       if (idleTime >= 9.5 * 60 * 1000 && idleTime < 10 * 60 * 1000) {
@@ -215,13 +278,13 @@ export default function App() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [handleLockVault, inactivityModalOpened, lastActive, openInactivityModal, vaultManager]);
+  }, [handleLockVault, inactivityModalOpened, openInactivityModal, vaultManager]);
 
   // Mobile/OS Background check
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        const idleTime = Date.now() - lastActive;
+        const idleTime = Date.now() - lastActiveRef.current;
         if (idleTime >= 10 * 60 * 1000 && vaultManager) {
           handleLockVault();
         }
@@ -230,7 +293,7 @@ export default function App() {
     
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [handleLockVault, lastActive, vaultManager]);
+  }, [handleLockVault, vaultManager]);
 
   useEffect(() => {
     if (vaultManager && storage) {
@@ -255,7 +318,7 @@ export default function App() {
     const isEditorRoute = location.pathname === ROUTES.editor;
     const isViewerRoute = location.pathname === ROUTES.viewer;
 
-    if ((isEditorRoute || isViewerRoute) && routeEntryPath) {
+    if (isViewerRoute && routeEntryPath) {
       // While a new draft is being initialized, ignore stale route-entry reconciliation.
       if (isNewEntryRef.current) {
         return;
@@ -269,7 +332,30 @@ export default function App() {
       return;
     }
 
+    if (isEditorRoute && routeEntryPath) {
+      if (allowNextEditorRoutePathRef.current === routeEntryPath) {
+        allowNextEditorRoutePathRef.current = null;
+        return;
+      }
+
+      const isActiveDraftRoute = isDraftMode && routeEntryPath === activeEntryPath;
+      const isSessionEditableRoute = routeEntryPath === sessionEditableEntryPath;
+      if (isNewEntryRef.current || isActiveDraftRoute || isSessionEditableRoute) {
+        return;
+      }
+
+      navigate(buildViewerRoute(routeEntryPath), { replace: true });
+      return;
+    }
+
     if (isEditorRoute && !routeEntryPath) {
+      const canContinueEditingCurrentEntry = Boolean(
+        activeEntryPath && (isDraftMode || activeEntryPath === sessionEditableEntryPath),
+      );
+      if (canContinueEditingCurrentEntry) {
+        return;
+      }
+
       if (!isDraftMode) {
         startDraftForDate(new Date());
       }
@@ -286,6 +372,7 @@ export default function App() {
     location.pathname,
     navigate,
     routeEntryPath,
+    sessionEditableEntryPath,
     startDraftForDate,
     syncEngine,
   ]);
@@ -303,6 +390,7 @@ export default function App() {
         setCurrentDirectoryPath(listing.currentPath);
         setDirectoryFolders(listing.folders);
         setDirectoryEntries(listing.entries);
+        setDirectoryMedia(listing.media);
 
         if (listing.currentPath !== routeDirectoryPath) {
           navigate(buildEntriesRoute(listing.currentPath), { replace: true });
@@ -322,6 +410,12 @@ export default function App() {
 
   useEffect(() => {
     if (!syncEngine || !activeEntryPath) {
+      setIsLoadingEntry(false);
+      return;
+    }
+
+    if (skipNextEntryFetchPathRef.current === activeEntryPath) {
+      skipNextEntryFetchPathRef.current = null;
       setIsLoadingEntry(false);
       return;
     }
@@ -360,74 +454,125 @@ export default function App() {
     };
   }, [activeEntryPath, handleAuthFailure, syncEngine]);
 
-  const openNewEntry = useCallback((date: Date = new Date()) => {
+  const openNewEntry = useCallback(async (date: Date = new Date()) => {
     if (!confirmDiscardChanges('You have unsaved changes. Are you sure you want to start a new entry?')) {
       return;
     }
 
+    await discardStagedForEntry(activeEntryPath);
     startDraftForDate(date);
     navigate(ROUTES.editor);
-  }, [confirmDiscardChanges, navigate, startDraftForDate]);
+  }, [activeEntryPath, confirmDiscardChanges, discardStagedForEntry, navigate, startDraftForDate]);
 
-  const openViewerEntry = useCallback((path: string) => {
+  const openViewerEntry = useCallback(async (path: string) => {
     if (path !== activeEntryPath && !confirmDiscardChanges('You have unsaved changes. Change entry anyway?')) {
       return;
     }
 
+    if (path !== activeEntryPath) {
+      await discardStagedForEntry(activeEntryPath);
+    }
+
     isNewEntryRef.current = false;
     setIsDraftMode(false);
+    setSessionEditableEntryPath(null);
     setActiveEntryPath(path);
     navigate(buildViewerRoute(path));
-  }, [activeEntryPath, confirmDiscardChanges, navigate]);
-
-  const openEditorEntry = useCallback((path: string) => {
-    if (path !== activeEntryPath && !confirmDiscardChanges('You have unsaved changes. Change entry anyway?')) {
-      return;
-    }
-
-    isNewEntryRef.current = false;
-    setIsDraftMode(false);
-    setActiveEntryPath(path);
-    navigate(buildEditorRoute(path));
-  }, [activeEntryPath, confirmDiscardChanges, navigate]);
+  }, [activeEntryPath, confirmDiscardChanges, discardStagedForEntry, navigate]);
 
   const openEntriesDirectory = useCallback((path: string) => {
     navigate(buildEntriesRoute(path));
   }, [navigate]);
 
-  const handleCloseEntry = () => {
+  const handleCloseEntry = async () => {
     if (!confirmDiscardChanges('You have unsaved changes. Are you sure you want to close this entry?')) {
       return;
     }
+
+    await discardStagedForEntry(activeEntryPath);
     const nextDirectory = getParentDirectory(activeEntryPath);
     resetEditorState();
     navigate(buildEntriesRoute(nextDirectory));
   };
 
   const handleSave = async () => {
-    if (!syncEngine || !activeEntryPath) return;
+    if (!syncEngine || !activeEntryPath || !storage || !vaultManager?.identity) return;
+    const canSaveCurrentEntry = isDraftMode || activeEntryPath === sessionEditableEntryPath;
+    if (!canSaveCurrentEntry) {
+      alert('Saved entries are read-only. Start a new entry to write.');
+      return;
+    }
+
     setIsSaving(true);
+
+    const entryPathAtSaveStart = activeEntryPath;
 
     try {
       const resolvedDate = editorDate || dayjs().format('YYYY-MM-DD_HH-mm');
       const resolvedTitle = resolveEntryTitle(editorTitle, resolvedDate);
+      const contentAtSaveStart = editorContent || '';
+
+      const pendingIds = extractPendingMediaIds(contentAtSaveStart);
+      const referencedPendingIds = new Set(pendingIds);
+      await deleteUnreferencedStagedMediaForEntry(entryPathAtSaveStart, referencedPendingIds, storage);
+
+      const baseAllocator = createEncryptedMediaPathAllocator(resolvedDate);
+      const existingMediaPaths = pendingIds.length > 0
+        ? await storage.listFiles(baseAllocator.directoryPath)
+        : [];
+      const mediaPathAllocator = createEncryptedMediaPathAllocator(resolvedDate, existingMediaPaths);
+
+      const stagedByPendingId = await getStagedMediaByPendingIds(pendingIds);
+      const missingPendingIds = pendingIds.filter((pendingId) => !stagedByPendingId.has(pendingId));
+      if (missingPendingIds.length > 0) {
+        throw new Error('Some staged images are missing. Please re-insert and try saving again.');
+      }
+
+      const pendingIdToEncryptedPath = new Map<string, string>();
+
+      for (const pendingId of pendingIds) {
+        const stagedRecord = stagedByPendingId.get(pendingId);
+        if (!stagedRecord) continue;
+
+        if (stagedRecord.uploadedPath) {
+          pendingIdToEncryptedPath.set(pendingId, stagedRecord.uploadedPath);
+          continue;
+        }
+
+        const encryptedMediaPath = mediaPathAllocator.nextPath(stagedRecord.extension);
+        const stagedBytes = await blobToUint8Array(stagedRecord.blob);
+
+        await encryptAndUploadImage(storage, vaultManager.identity.publicKey, encryptedMediaPath, stagedBytes);
+        await markStagedMediaUploadedPath(pendingId, encryptedMediaPath);
+        pendingIdToEncryptedPath.set(pendingId, encryptedMediaPath);
+      }
+
+      const finalContent = replacePendingMediaPaths(contentAtSaveStart, pendingIdToEncryptedPath);
+      const mediaIds = extractEncryptedMediaPaths(finalContent);
+
       const journalEntry: JournalEntry = {
         id: activeEntryId || crypto.randomUUID(),
         title: resolvedTitle,
-        plaintext: editorContent || '',
+        plaintext: finalContent,
         date: resolvedDate,
-        mediaIds: []
+        mediaIds
       };
 
       const newPath = await syncEngine.saveEntry(journalEntry);
+      await deleteStagedMediaForEntry(entryPathAtSaveStart);
+
+      skipNextEntryFetchPathRef.current = newPath;
+      allowNextEditorRoutePathRef.current = newPath;
 
       setIsDraftMode(false);
+      setSessionEditableEntryPath(newPath);
       setActiveEntryPath(newPath);
       setActiveEntryId(journalEntry.id);
       setEditorTitle(resolvedTitle);
+      setEditorContent(finalContent);
       setEditorDate(resolvedDate);
       setInitialEditorTitle(journalEntry.title);
-      setInitialEditorContent(journalEntry.plaintext);
+      setInitialEditorContent(finalContent);
       setInitialEditorDate(resolvedDate);
 
       navigate(buildEditorRoute(newPath), { replace: true });
@@ -436,7 +581,8 @@ export default function App() {
         handleLogout();
       } else {
         console.error(e);
-        alert("Failed to save and sync entry.");
+        const message = e instanceof Error ? e.message : 'Failed to save and sync entry.';
+        alert(message);
       }
     } finally {
       setIsSaving(false);
@@ -517,12 +663,14 @@ export default function App() {
             active={mode === 'editor'}
             mb="xs"
             onClick={() => {
-              if (activeEntryPath && !isDraftMode) {
-                openEditorEntry(activeEntryPath);
+              const canEditActiveEntry = activeEntryPath && (isDraftMode || activeEntryPath === sessionEditableEntryPath);
+              if (canEditActiveEntry && activeEntryPath) {
+                navigate(buildEditorRoute(activeEntryPath));
                 return;
               }
+
               if (mode !== 'editor' || routeEntryPath) {
-                openNewEntry(new Date());
+                void openNewEntry(new Date());
                 return;
               }
               navigate(ROUTES.editor);
@@ -532,8 +680,11 @@ export default function App() {
             label="All Entries"
             active={mode === 'entries'}
             mb="md"
-            onClick={() => {
+            onClick={async () => {
               if (!confirmDiscardChanges('You have unsaved changes. Continue to entries anyway?')) return;
+
+              await discardStagedForEntry(activeEntryPath);
+              setSessionEditableEntryPath(null);
               navigate(buildEntriesRoute(currentDirectoryPath));
             }}
           />
@@ -542,7 +693,7 @@ export default function App() {
         <AppShell.Main bg="var(--mantine-color-body)">
           <div style={{ height: 'calc(100vh - 70px)', display: 'flex', flexDirection: 'column' }}>
             {mode === 'editor' && (
-              activeEntryPath ? (
+              activeEntryPath && (isDraftMode || activeEntryPath === sessionEditableEntryPath) ? (
                 <>
                   <Flex gap="md" align="center" style={{ padding: '0.5rem', borderBottom: '1px solid var(--mantine-color-default-border)' }}>
                     <TextInput
@@ -555,30 +706,26 @@ export default function App() {
                       style={{ flex: 1 }}
                     />
 
-                    {isDraftMode ? (
-                      <DateInput
-                        value={editorDateValue}
-                        onChange={(value) => {
-                          if (!value) return;
-                          const nextDate = typeof value === 'string' ? new Date(value) : value;
-                          if (Number.isNaN(nextDate.getTime())) return;
+                    <DateInput
+                      value={editorDateValue}
+                      onChange={(value) => {
+                        if (!value) return;
+                        const nextDate = typeof value === 'string' ? new Date(value) : value;
+                        if (Number.isNaN(nextDate.getTime())) return;
 
-                          const nextDateValue = composeEditorDate(nextDate, editorDate);
-                          if (isDateSyncedEntryTitle(editorTitle, editorDate)) {
-                            setEditorTitle(buildDefaultEntryTitle(nextDateValue));
-                          }
-                          setEditorDate(nextDateValue);
-                        }}
-                        placeholder="Entry Date"
-                        valueFormat="YYYY-MM-DD"
-                        clearable={false}
-                        maxDate={new Date()}
-                        w={170}
-                        size="xs"
-                      />
-                    ) : (
-                      <Text size="xs" c="dimmed" pt={5}>{editorDate}</Text>
-                    )}
+                        const nextDateValue = composeEditorDate(nextDate, editorDate);
+                        if (isDateSyncedEntryTitle(editorTitle, editorDate)) {
+                          setEditorTitle(buildDefaultEntryTitle(nextDateValue));
+                        }
+                        setEditorDate(nextDateValue);
+                      }}
+                      placeholder="Entry Date"
+                      valueFormat="YYYY-MM-DD"
+                      clearable={false}
+                      maxDate={new Date()}
+                      w={170}
+                      size="xs"
+                    />
 
                     <Group gap={6}>
                       <Tooltip label="Save & Sync">
@@ -604,6 +751,9 @@ export default function App() {
                         key={`${activeEntryPath}-${isDraftMode ? 'draft' : 'entry'}`}
                         value={editorContent}
                         onChange={(value) => setEditorContent(value)}
+                        storage={storage}
+                        vaultIdentity={vaultManager.identity!}
+                        entryKey={activeEntryPath}
                       />
                     )}
                   </div>
@@ -621,6 +771,9 @@ export default function App() {
                 currentPath={currentDirectoryPath}
                 folders={directoryFolders}
                 entries={directoryEntries}
+                media={directoryMedia}
+                storage={storage}
+                secretKey={vaultManager.identity!.secretKey}
                 onOpenFolder={openEntriesDirectory}
                 onOpenEntry={openViewerEntry}
               />
@@ -636,7 +789,8 @@ export default function App() {
                   title={editorTitle}
                   content={editorContent}
                   date={editorDate}
-                  onEdit={() => openEditorEntry(activeEntryPath)}
+                  storage={storage}
+                  secretKey={vaultManager.identity!.secretKey}
                 />
               ) : (
                 <Center style={{ flex: 1 }}>
@@ -657,7 +811,7 @@ export default function App() {
           path={ROUTES.login}
           element={
             storage ? (
-              <Navigate to={vaultManager ? (activeEntryPath ? buildEditorRoute(activeEntryPath) : ROUTES.editor) : ROUTES.unlock} replace />
+              <Navigate to={vaultManager ? getResumeRoute() : ROUTES.unlock} replace />
             ) : (
               <AuthWall onAuthenticated={setStorage} />
             )
@@ -669,7 +823,7 @@ export default function App() {
             !storage ? (
               <Navigate to={ROUTES.login} replace />
             ) : vaultManager ? (
-              <Navigate to={activeEntryPath ? buildEditorRoute(activeEntryPath) : ROUTES.editor} replace />
+              <Navigate to={getResumeRoute()} replace />
             ) : (
               <VaultSetupWall storage={storage} onVaultReady={setVaultManager} onAuthError={handleLogout} />
             )
@@ -699,7 +853,7 @@ export default function App() {
         </Text>
         <Group justify="flex-end">
           <Button color="gray" variant="light" onClick={handleLockVault}>Lock Now</Button>
-          <Button onClick={() => { setLastActive(Date.now()); closeInactivityModal(); }}>Continue Session</Button>
+          <Button onClick={() => { lastActiveRef.current = Date.now(); closeInactivityModal(); }}>Continue Session</Button>
         </Group>
       </Modal>
     </>

@@ -1,19 +1,36 @@
 import { ActionIcon, Box, Group, Stack, Text, Tooltip, useMantineColorScheme } from '@mantine/core';
-import { IconEdit, IconMaximize, IconMinimize } from '@tabler/icons-react';
+import { IconMaximize, IconMinimize } from '@tabler/icons-react';
 import MDEditor from '@uiw/react-md-editor';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { resolveEntryTitle } from '../lib/entryTitle';
+import type { StorageProvider } from '../lib/storage';
+import { EncryptedMediaImage } from './EncryptedMediaImage';
 
 interface ViewerProps {
   title: string;
   content: string;
   date: string;
-  onEdit: () => void;
+  storage: StorageProvider;
+  secretKey: string;
 }
 
-export function Viewer({ title, content, date, onEdit }: ViewerProps) {
+type MarkdownImageProps = React.ImgHTMLAttributes<HTMLImageElement> & {
+  node?: unknown;
+};
+
+export function Viewer({ title, content, date, storage, secretKey }: ViewerProps) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const { colorScheme } = useMantineColorScheme();
+
+  const markdownComponents = useMemo(() => ({
+    img: ({ node: _node, ...props }: MarkdownImageProps) => (
+      <EncryptedMediaImage
+        {...props}
+        storage={storage}
+        secretKey={secretKey}
+      />
+    ),
+  }), [secretKey, storage]);
 
   return (
     <Box
@@ -43,12 +60,6 @@ export function Viewer({ title, content, date, onEdit }: ViewerProps) {
           </Stack>
 
           <Group gap={4} wrap="nowrap">
-            <Tooltip label="Edit entry" withArrow position="bottom" openDelay={300}>
-              <ActionIcon color="indigo" variant="light" onClick={onEdit}>
-                <IconEdit size={18} stroke={1.5} />
-              </ActionIcon>
-            </Tooltip>
-
             <Tooltip label={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'} withArrow position="bottom" openDelay={300}>
               <ActionIcon variant="subtle" color="gray" onClick={() => setIsFullscreen(!isFullscreen)}>
                 {isFullscreen ? <IconMinimize size={18} stroke={1.5} /> : <IconMaximize size={18} stroke={1.5} />}
@@ -60,7 +71,11 @@ export function Viewer({ title, content, date, onEdit }: ViewerProps) {
 
       <Box style={{ flex: 1, overflowY: 'auto', padding: '1rem', backgroundColor: 'var(--mantine-color-body)' }}>
         <div className="wmde-markdown" style={{ backgroundColor: 'transparent' }}>
-          <MDEditor.Markdown source={content || '_No content yet._'} style={{ backgroundColor: 'transparent' }} />
+          <MDEditor.Markdown
+            source={content || '_No content yet._'}
+            style={{ backgroundColor: 'transparent' }}
+            components={markdownComponents}
+          />
         </div>
       </Box>
     </Box>

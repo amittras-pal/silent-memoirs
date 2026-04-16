@@ -1,4 +1,5 @@
-import type { StorageProvider, JournalEntry } from './storage';
+import { isSupportedImageExtension } from './media';
+import type { JournalEntry, StorageDirectoryItem, StorageProvider } from './storage';
 import type { AgeIdentity } from './crypto';
 import { encryptData, decryptData } from './crypto';
 import { resolveEntryTitle } from './entryTitle';
@@ -25,10 +26,19 @@ export interface EntryDirectory {
   updatedAt: string;
 }
 
+export interface MediaFileMetadata {
+  path: string;
+  name: string;
+  parentPath: string;
+  year: string;
+  updatedAt: string;
+}
+
 export interface DirectoryListing {
   currentPath: string;
   folders: EntryDirectory[];
   entries: EntryMetadata[];
+  media: MediaFileMetadata[];
 }
 
 interface ManifestFile {
@@ -103,6 +113,74 @@ export class SyncEngine {
       if (bYearFolder) return 1;
       return a.name.localeCompare(b.name);
     });
+  }
+
+  private sortMediaFiles(files: MediaFileMetadata[]): MediaFileMetadata[] {
+    return [...files].sort((a, b) => b.name.localeCompare(a.name));
+  }
+
+  private async isKnownDirectoryPath(path: string, manifest: ManifestFile): Promise<boolean> {
+    const normalizedPath = this.normalizeDirectoryPath(path);
+    if (!normalizedPath) return true;
+
+    if (manifest.directories.some((folder) => folder.path === normalizedPath)) {
+      return true;
+    }
+
+    const parentPath = this.getParentPath(normalizedPath);
+    const targetName = normalizedPath.split('/').pop() || normalizedPath;
+    const siblings = await this.storage.listDirectoryItems(parentPath);
+    return siblings.some((item) => item.isFolder && item.name === targetName);
+  }
+
+  private mergeManifestAndStorageFolders(
+    currentPath: string,
+    manifestFolders: EntryDirectory[],
+    storageItems: StorageDirectoryItem[],
+  ): EntryDirectory[] {
+    const merged = new Map<string, EntryDirectory>();
+
+    for (const folder of manifestFolders) {
+      merged.set(folder.path, folder);
+    }
+
+    for (const item of storageItems) {
+      if (!item.isFolder) continue;
+      if (merged.has(item.path)) continue;
+
+      merged.set(item.path, {
+        path: item.path,
+        name: item.name,
+        parentPath: currentPath,
+        folderCount: 0,
+        entryCount: 0,
+        updatedAt: item.updatedAt,
+      });
+    }
+
+    return this.sortFolderChildren([...merged.values()]);
+  }
+
+  private buildMediaFilesForDirectory(currentPath: string, storageItems: StorageDirectoryItem[]): MediaFileMetadata[] {
+    const isMediaDirectory = /(^|\/)media$/.test(currentPath);
+    if (!isMediaDirectory) return [];
+
+    const files = storageItems
+      .filter((item) => !item.isFolder)
+      .filter((item) => {
+        const extension = item.name.split('.').pop();
+        if (!extension) return false;
+        return isSupportedImageExtension(extension.toLowerCase());
+      })
+      .map((item) => ({
+        path: item.path,
+        name: item.name,
+        parentPath: currentPath,
+        year: item.path.split('/')[0] || '',
+        updatedAt: item.updatedAt,
+      }));
+
+    return this.sortMediaFiles(files);
   }
 
   private buildDirectories(entries: EntryMetadata[]): EntryDirectory[] {
@@ -278,21 +356,28 @@ export class SyncEngine {
   public async getDirectoryListing(directoryPath = ''): Promise<DirectoryListing> {
     const manifest = await this.getManifest();
     const normalizedPath = this.normalizeDirectoryPath(directoryPath);
-    const isKnownPath = manifest.directories.some((folder) => folder.path === normalizedPath);
+    const isKnownPath = await this.isKnownDirectoryPath(normalizedPath, manifest);
     const currentPath = isKnownPath ? normalizedPath : '';
 
-    const folders = this.sortFolderChildren(
-      manifest.directories.filter((folder) => folder.parentPath === currentPath && folder.path !== currentPath),
+    const storageItems = await this.storage.listDirectoryItems(currentPath);
+
+    const manifestFolders = manifest.directories.filter(
+      (folder) => folder.parentPath === currentPath && folder.path !== currentPath,
     );
+
+    const folders = this.mergeManifestAndStorageFolders(currentPath, manifestFolders, storageItems);
 
     const entries = this.sortMetadata(
       manifest.entries.filter((entry) => entry.parentPath === currentPath),
     );
 
+    const media = this.buildMediaFilesForDirectory(currentPath, storageItems);
+
     return {
       currentPath,
       folders,
       entries,
+      media,
     };
   }
 

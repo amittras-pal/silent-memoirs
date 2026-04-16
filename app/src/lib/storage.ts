@@ -6,9 +6,17 @@ export interface JournalEntry {
   mediaIds: string[];
 }
 
+export interface StorageDirectoryItem {
+  path: string;
+  name: string;
+  isFolder: boolean;
+  updatedAt: string;
+}
+
 export interface StorageProvider {
   uploadFile(path: string, data: Blob | Uint8Array, mimeType?: string): Promise<void>;
   downloadFile(path: string): Promise<Uint8Array | null>;
+  listDirectoryItems(pathPrefix: string): Promise<StorageDirectoryItem[]>;
   listFiles(pathPrefix: string): Promise<string[]>;
   deleteFile(path: string): Promise<void>;
 }
@@ -50,13 +58,26 @@ export class GoogleDriveStorage implements StorageProvider {
     return `${this.rootFolder}/${path}`.replace(/\/+/g, '/');
   }
 
+  private normalizeCachePath(path: string): string {
+    return path.split('/').filter(Boolean).join('/');
+  }
+
   private async getFileIdByPath(path: string): Promise<string | null> {
-    if (this.pathCache.has(path)) return this.pathCache.get(path)!;
-    
-    const parts = path.split('/').filter(Boolean);
+    const normalizedPath = this.normalizeCachePath(path);
+    if (this.pathCache.has(normalizedPath)) return this.pathCache.get(normalizedPath)!;
+
+    const parts = normalizedPath.split('/').filter(Boolean);
     let currentParentId = 'root';
+    let currentPath = '';
 
     for (const part of parts) {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+
+      if (this.pathCache.has(currentPath)) {
+        currentParentId = this.pathCache.get(currentPath)!;
+        continue;
+      }
+
       const q = `name='${part}' and '${currentParentId}' in parents and trashed=false`;
       const res = await this.fetchAPI(`/files?q=${encodeURIComponent(q)}&fields=files(id,mimeType)`);
       if (!res) return null;
@@ -64,12 +85,13 @@ export class GoogleDriveStorage implements StorageProvider {
       
       if (data.files && data.files.length > 0) {
         currentParentId = data.files[0].id;
+        this.pathCache.set(currentPath, currentParentId);
       } else {
         return null;
       }
     }
 
-    this.pathCache.set(path, currentParentId);
+    this.pathCache.set(normalizedPath, currentParentId);
     return currentParentId;
   }
 
@@ -92,14 +114,21 @@ export class GoogleDriveStorage implements StorageProvider {
   }
 
   private async ensurePathFolders(path: string): Promise<string> {
-    const parts = path.split('/').filter(Boolean);
+    const normalizedPath = this.normalizeCachePath(path);
+    const parts = normalizedPath.split('/').filter(Boolean);
     parts.pop(); // Remove the filename itself
     
     let currentParentId = 'root';
     let currentPath = '';
 
     for (const part of parts) {
-      currentPath += `/${part}`;
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+
+      if (this.pathCache.has(currentPath)) {
+        currentParentId = this.pathCache.get(currentPath)!;
+        continue;
+      }
+
       const existingId = await this.getFileIdByPath(currentPath);
       if (existingId) {
         currentParentId = existingId;
@@ -143,7 +172,7 @@ export class GoogleDriveStorage implements StorageProvider {
       throw new Error('Upload failed');
     }
     const responseData = await res.json();
-    this.pathCache.set(fullPath, responseData.id);
+    this.pathCache.set(this.normalizeCachePath(fullPath), responseData.id);
   }
 
   async downloadFile(path: string): Promise<Uint8Array | null> {
@@ -156,21 +185,31 @@ export class GoogleDriveStorage implements StorageProvider {
     return new Uint8Array(arrayBuffer);
   }
 
-  async listFiles(pathPrefix: string): Promise<string[]> {
+  async listDirectoryItems(pathPrefix: string): Promise<StorageDirectoryItem[]> {
     const fullPrefix = this.getFullPath(pathPrefix);
     const parentId = await this.getFileIdByPath(fullPrefix);
     if (!parentId) return [];
 
     const q = `'${parentId}' in parents and trashed=false`;
-    const res = await this.fetchAPI(`/files?q=${encodeURIComponent(q)}&fields=files(name)`);
+    const res = await this.fetchAPI(`/files?q=${encodeURIComponent(q)}&fields=files(name,mimeType,modifiedTime)`);
     if (!res) return [];
     
     const data = await res.json();
-    // Return relative paths to hide root folder from consumer
-    return (data.files || []).map((f: any) => {
+
+    return (data.files || []).map((f: any): StorageDirectoryItem => {
       const cleanPrefix = pathPrefix.replace(/\/$/, "");
-      return cleanPrefix ? `${cleanPrefix}/${f.name}` : f.name;
+      return {
+        path: cleanPrefix ? `${cleanPrefix}/${f.name}` : f.name,
+        name: f.name,
+        isFolder: f.mimeType === 'application/vnd.google-apps.folder',
+        updatedAt: f.modifiedTime || new Date().toISOString(),
+      };
     });
+  }
+
+  async listFiles(pathPrefix: string): Promise<string[]> {
+    const entries = await this.listDirectoryItems(pathPrefix);
+    return entries.map((entry) => entry.path);
   }
 
   async deleteFile(path: string): Promise<void> {
@@ -179,6 +218,6 @@ export class GoogleDriveStorage implements StorageProvider {
     if (!fileId) return;
 
     await this.fetchAPI(`/files/${fileId}`, { method: 'DELETE' });
-    this.pathCache.delete(fullPath);
+    this.pathCache.delete(this.normalizeCachePath(fullPath));
   }
 }
