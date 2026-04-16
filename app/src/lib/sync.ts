@@ -15,6 +15,7 @@ export interface EntryMetadata {
   date: string;
   year: string;
   updatedAt: string;
+  mediaIds: string[];
 }
 
 export interface EntryDirectory {
@@ -89,6 +90,7 @@ export class SyncEngine {
       date: entry.date,
       year: this.getYearFromDate(entry.date),
       updatedAt: new Date().toISOString(),
+      mediaIds: entry.mediaIds || [],
     };
   }
 
@@ -226,6 +228,26 @@ export class SyncEngine {
           dir.updatedAt = entry.updatedAt;
         }
       }
+
+      if (entry.mediaIds && Array.isArray(entry.mediaIds)) {
+        for (const mediaPath of entry.mediaIds) {
+          const mediaParentPath = this.normalizeDirectoryPath(this.getParentPath(mediaPath));
+          ensureDirectory(mediaParentPath);
+          
+          const mediaDir = directories.get(mediaParentPath);
+          if (mediaDir) {
+            mediaDir.entryCount += 1;
+          }
+
+          const mediaChain = mediaParentPath ? ['', ...mediaParentPath.split('/').map((_, index, parts) => parts.slice(0, index + 1).join('/'))] : [''];
+          for (const path of mediaChain) {
+            const dir = directories.get(path);
+            if (dir && entry.updatedAt > dir.updatedAt) {
+              dir.updatedAt = entry.updatedAt;
+            }
+          }
+        }
+      }
     }
 
     for (const dir of directories.values()) {
@@ -263,6 +285,7 @@ export class SyncEngine {
           date,
           year: typeof candidate.year === 'string' && candidate.year ? candidate.year : this.getYearFromDate(date),
           updatedAt: typeof candidate.updatedAt === 'string' && candidate.updatedAt ? candidate.updatedAt : new Date().toISOString(),
+          mediaIds: Array.isArray(candidate.mediaIds) ? candidate.mediaIds : [],
         };
       })
       .filter((entry): entry is EntryMetadata => Boolean(entry));
@@ -274,7 +297,7 @@ export class SyncEngine {
     const sortedEntries = this.sortMetadata(entries);
 
     return {
-      version: 2,
+      version: 3,
       updatedAt: new Date().toISOString(),
       entries: sortedEntries,
       directories: this.buildDirectories(sortedEntries),
@@ -287,12 +310,13 @@ export class SyncEngine {
 
     const decrypted = await decryptData(this.identity.secretKey, bytes);
     const parsed = JSON.parse(decrypted) as Partial<ManifestFile>;
+    if (parsed.version !== 3) return null; // Force rebuild for new schema
     if (!Array.isArray(parsed.entries)) return null;
 
     const entries = this.normalizeManifestEntries(parsed.entries);
 
     return {
-      version: parsed.version || 2,
+      version: parsed.version || 3,
       updatedAt: parsed.updatedAt || new Date().toISOString(),
       entries,
       directories: this.buildDirectories(entries),
@@ -353,6 +377,10 @@ export class SyncEngine {
     return manifest.entries;
   }
 
+  public async getRawManifest() {
+    return await this.getManifest();
+  }
+
   public async getDirectoryListing(directoryPath = ''): Promise<DirectoryListing> {
     const manifest = await this.getManifest();
     const normalizedPath = this.normalizeDirectoryPath(directoryPath);
@@ -381,13 +409,19 @@ export class SyncEngine {
     };
   }
 
-  public async rebuildManifest(): Promise<EntryMetadata[]> {
+  public async rebuildManifest(onProgress?: (msg: string) => void): Promise<EntryMetadata[]> {
+    if (onProgress) onProgress('Scanning vault for year directories...');
     const years = await this.getYears();
     const entries: EntryMetadata[] = [];
 
     for (const year of years) {
+      if (onProgress) onProgress(`Listing entries for year ${year}...`);
       const paths = await this.getEntriesForYear(year);
+
+      let processed = 0;
       for (const path of paths) {
+        processed++;
+        if (onProgress) onProgress(`Decrypting entry: ${path} (${processed}/${paths.length})`);
         const entry = await this.fetchEntry(path);
         if (entry) {
           entries.push(this.toMetadata(entry, path));
@@ -395,6 +429,7 @@ export class SyncEngine {
       }
     }
 
+    if (onProgress) onProgress('Finalizing and encrypting new manifest...');
     await this.writeManifest(entries);
     return this.sortMetadata(entries);
   }

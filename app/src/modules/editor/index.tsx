@@ -70,7 +70,8 @@ export default function EditorModule() {
     confirmDiscardChanges,
     discardStagedForEntry,
     handleAuthFailure,
-    isDirty
+    isDirty,
+    triggerManifestRepair
   } = useAppContext();
 
   const navigate = useNavigate();
@@ -193,7 +194,13 @@ export default function EditorModule() {
 
     syncEngine.fetchEntry(activeEntryPath)
       .then((entry) => {
-        if (cancelled || !entry) return;
+        if (cancelled) return;
+        if (!entry) {
+          triggerManifestRepair().then(() => {
+            navigate(ROUTES.entries, { replace: true });
+          });
+          return;
+        }
 
         const resolvedTitle = resolveEntryTitle(entry.title, entry.date);
 

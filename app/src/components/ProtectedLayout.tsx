@@ -1,31 +1,31 @@
-import { Suspense, useMemo } from 'react';
-import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { 
-  ActionIcon, 
-  AppShell, 
-  Burger, 
-  Button, 
-  Center, 
-  Group, 
-  Loader, 
-  NavLink, 
-  Text, 
-  Tooltip, 
-  useMantineColorScheme 
+import {
+  ActionIcon,
+  AppShell,
+  Burger,
+  Button,
+  Center,
+  Group,
+  Loader,
+  NavLink,
+  Text,
+  Tooltip,
+  useMantineColorScheme
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
-import { 
-  IconEdit, 
-  IconFolder, 
-  IconMoon, 
-  IconPlus, 
-  IconSun 
+import {
+  IconEdit,
+  IconFolder,
+  IconMoon,
+  IconPlus,
+  IconSun
 } from '@tabler/icons-react';
+import { Suspense, useMemo } from 'react';
+import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 
 import { useAppContext } from '../contexts/AppContext';
 import { ROUTES, buildEditorRoute } from '../lib/routes';
-import { VaultLockButton } from './VaultLockButton';
 import { LogoutButton } from './LogoutButton';
+import { VaultLockButton } from './VaultLockButton';
 
 export function ProtectedLayout() {
   const { 
@@ -94,6 +94,7 @@ export function ProtectedLayout() {
             </Text>
           </Group>
           <Group>
+            {/* <DebugManifestButton /> */}
             <Tooltip label="Toggle theme">
               <ActionIcon onClick={toggleColorScheme} variant="default" size="lg" radius="md">
                 {colorScheme === 'dark' ? <IconSun size={20} stroke={1.5} /> : <IconMoon size={20} stroke={1.5} />}

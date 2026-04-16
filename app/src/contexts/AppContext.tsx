@@ -1,21 +1,21 @@
+import { Button, Center, Group, Loader, Modal, Text } from '@mantine/core';
+import { useDisclosure } from '@mantine/hooks';
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useDisclosure } from '@mantine/hooks';
-import { Button, Group, Modal, Text } from '@mantine/core';
 
-import { 
-  clearMediaImageCache, 
-  clearMediaUploadPathCursor 
+import { clearCachedGoogleToken } from '../components/AuthWall';
+import {
+  clearMediaImageCache,
+  clearMediaUploadPathCursor
 } from '../lib/media';
 import { ROUTES, buildEditorRoute, buildViewerRoute } from '../lib/routes';
-import { 
-  clearAllStagedMedia, 
-  deleteUploadedStagedMediaForEntry 
+import {
+  clearAllStagedMedia,
+  deleteUploadedStagedMediaForEntry
 } from '../lib/stagedMedia';
-import { type GoogleDriveStorage, UnauthorizedError } from '../lib/storage';
+import { UnauthorizedError, type GoogleDriveStorage } from '../lib/storage';
 import { SyncEngine } from '../lib/sync';
 import { VaultManager } from '../lib/vault';
-import { clearCachedGoogleToken } from '../components/AuthWall';
 
 interface AppContextType {
   storage: GoogleDriveStorage | null;
@@ -59,6 +59,7 @@ interface AppContextType {
   handleLogout: () => void;
   performVaultLock: () => void;
   getResumeRoute: () => string;
+  triggerManifestRepair: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | null>(null);
@@ -87,6 +88,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const lastActiveRef = useRef<number>(Date.now());
   const [inactivityModalOpened, { open: openInactivityModal, close: closeInactivityModal }] = useDisclosure(false);
   const [countdown, setCountdown] = useState(30);
+
+  const [repairStatus, setRepairStatus] = useState<string | null>(null);
 
   const confirmDiscardChanges = useCallback((message: string): boolean => {
     if (!isDirty) return true;
@@ -233,6 +236,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return ROUTES.editor;
   }, [activeEntryPath, isDraftMode]);
 
+  const isRepairingRef = useRef(false);
+
+  const triggerManifestRepair = useCallback(async () => {
+    if (!syncEngine || isRepairingRef.current) return;
+    isRepairingRef.current = true;
+    setRepairStatus('Preparing to rebuild manifest...');
+    try {
+      await syncEngine.rebuildManifest((status) => setRepairStatus(status));
+    } catch (e) {
+      console.error('Failed to rebuild manifest', e);
+    } finally {
+      setRepairStatus(null);
+      isRepairingRef.current = false;
+    }
+  }, [syncEngine]);
+
   const value = {
     storage, setStorage,
     vaultManager, setVaultManager,
@@ -255,6 +274,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     handleLogout,
     performVaultLock,
     getResumeRoute,
+    triggerManifestRepair,
   };
 
   return (
@@ -279,6 +299,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
           <Button color="gray" variant="light" onClick={performVaultLock}>Lock Now</Button>
           <Button onClick={() => { lastActiveRef.current = Date.now(); closeInactivityModal(); }}>Continue Session</Button>
         </Group>
+      </Modal>
+
+      <Modal
+        opened={!!repairStatus}
+        onClose={() => {}}
+        title="Repairing Vault Manifest"
+        centered
+        closeOnClickOutside={false}
+        closeOnEscape={false}
+        withCloseButton={false}
+        overlayProps={{ blur: 3 }}
+      >
+        <Center style={{ flexDirection: 'column' }} mt="md" mb="xl">
+          <Loader size="lg" mb="md" />
+          <Text fw={500}>{repairStatus}</Text>
+          <Text size="sm" c="dimmed" mt="xs">Please remain on this screen while we're rebuilding your vault manifest. <br/> While we can repair the manifest agains missing files, we're not able to repair broken files. If any file is corrupted/modified outside the applicaiton, that data is lost.</Text>
+        </Center>
       </Modal>
     </AppContext.Provider>
   );

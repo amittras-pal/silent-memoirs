@@ -8,7 +8,7 @@ import { Viewer } from '../../components/Viewer';
 import { resolveEntryTitle } from '../../lib/entryTitle';
 
 export default function ViewerModule() {
-  const { storage, syncEngine, vaultManager } = useAppContext();
+  const { storage, syncEngine, vaultManager, triggerManifestRepair } = useAppContext();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -33,7 +33,13 @@ export default function ViewerModule() {
 
     syncEngine.fetchEntry(routeEntryPath)
       .then((entry) => {
-        if (cancelled || !entry) return;
+        if (cancelled) return;
+        if (!entry) {
+          triggerManifestRepair().then(() => {
+            navigate(ROUTES.entries, { replace: true });
+          });
+          return;
+        }
 
         const resolvedTitle = resolveEntryTitle(entry.title, entry.date);
         setViewTitle(resolvedTitle);
