@@ -1,7 +1,7 @@
 # Manual Vault Lock
 
 ## Feature ID: FEAT-0008
-**Status**: Planned  
+**Status**: Completed  
 
 ## Objective
 Expose a dedicated manual vault lock action in the sidebar so users can immediately lock cryptographic access without logging out or disconnecting Google Drive.
@@ -53,11 +53,11 @@ Expose a dedicated manual vault lock action in the sidebar so users can immediat
 - Inactivity auto-lock behavior remains unchanged.
 
 ## Acceptance Criteria
-- [ ] Sidebar contains a dedicated manual `Lock Vault` action.
-- [ ] Manual lock routes user to unlock flow immediately.
-- [ ] Manual lock does not disconnect Google Drive session.
-- [ ] Draft/session restoration behavior after unlock remains unchanged from current behavior.
-- [ ] Inactivity lock logic still works and reuses the same lock pipeline.
+- [x] Sidebar contains a dedicated manual `Lock Vault` action.
+- [x] Manual lock routes user to unlock flow immediately.
+- [x] Manual lock does not disconnect Google Drive session.
+- [x] Draft/session restoration behavior after unlock remains unchanged from current behavior.
+- [x] Inactivity lock logic still works and reuses the same lock pipeline.
 
 ## Dependencies & Considerations
 - Closely related to `FEAT-0009` (logout relocation and confirmation); both should use clearly separated actions.

@@ -1,14 +1,15 @@
 import { ActionIcon, AppShell, Burger, Button, Center, Flex, Group, Loader, Modal, NavLink, Text, TextInput, Tooltip, useMantineColorScheme } from '@mantine/core';
 import { DateInput } from '@mantine/dates';
 import { useDisclosure } from '@mantine/hooks';
-import { Editor } from './components/Editor';
 import dayjs from 'dayjs';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { Editor } from './components/Editor';
 
-import { IconDeviceFloppy, IconLogout, IconMoon, IconPlus, IconSun, IconX } from '@tabler/icons-react';
+import { IconDeviceFloppy, IconEdit, IconFolder, IconLogout, IconMoon, IconPlus, IconSun, IconX } from '@tabler/icons-react';
 import { AuthWall, clearCachedGoogleToken } from './components/AuthWall';
 import { EntriesList } from './components/EntriesList';
+import { VaultLockButton } from './components/VaultLockButton';
 import { VaultSetupWall } from './components/VaultSetupWall';
 import { Viewer } from './components/Viewer';
 import { buildDefaultEntryTitle, isDateSyncedEntryTitle, parseEntryDate, resolveEntryTitle } from './lib/entryTitle';
@@ -23,7 +24,6 @@ import {
   replacePendingMediaPaths,
 } from './lib/media';
 import { buildEditorRoute, buildEntriesRoute, buildViewerRoute, decodeDirectoryPath, decodeEntryPath, ROUTES } from './lib/routes';
-import { type GoogleDriveStorage, type JournalEntry, UnauthorizedError } from './lib/storage';
 import {
   clearAllStagedMedia,
   deleteStagedMediaForEntry,
@@ -32,6 +32,7 @@ import {
   getStagedMediaByPendingIds,
   markStagedMediaUploadedPath,
 } from './lib/stagedMedia';
+import { type GoogleDriveStorage, type JournalEntry, UnauthorizedError } from './lib/storage';
 import { type EntryDirectory, type EntryMetadata, type MediaFileMetadata, SyncEngine } from './lib/sync';
 import { VaultManager } from './lib/vault';
 
@@ -227,7 +228,7 @@ export default function App() {
     };
   }, []);
 
-  const handleLockVault = useCallback(() => {
+  const performVaultLock = useCallback(() => {
     clearMediaImageCache();
     clearMediaUploadPathCursor();
     void clearAllStagedMedia().catch((error) => console.error('Failed to clear staged media on vault lock', error));
@@ -273,12 +274,12 @@ export default function App() {
           openInactivityModal();
         }
       } else if (idleTime >= 10 * 60 * 1000) {
-        handleLockVault();
+        performVaultLock();
       }
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [handleLockVault, inactivityModalOpened, openInactivityModal, vaultManager]);
+  }, [inactivityModalOpened, openInactivityModal, performVaultLock, vaultManager]);
 
   // Mobile/OS Background check
   useEffect(() => {
@@ -286,14 +287,14 @@ export default function App() {
       if (document.visibilityState === 'visible') {
         const idleTime = Date.now() - lastActiveRef.current;
         if (idleTime >= 10 * 60 * 1000 && vaultManager) {
-          handleLockVault();
+          performVaultLock();
         }
       }
     };
     
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [handleLockVault, vaultManager]);
+  }, [performVaultLock, vaultManager]);
 
   useEffect(() => {
     if (vaultManager && storage) {
@@ -646,48 +647,57 @@ export default function App() {
         </AppShell.Header>
 
         <AppShell.Navbar p="sm" style={{ borderRight: '1px solid var(--mantine-color-default-border)', display: 'flex', flexDirection: 'column' }}>
-          <Button
-            variant="light"
-            color="indigo"
-            fullWidth
-            mb="md"
-            mt="md"
-            onClick={() => openNewEntry(new Date())}
-            leftSection={<IconPlus size={16} stroke={1.5} />}
-          >
-            New Entry
-          </Button>
+          <div style={{ flex: 1 }}>
+            <Button
+              variant="light"
+              color="indigo"
+              fullWidth
+              mb="md"
+              mt="md"
+              onClick={() => openNewEntry(new Date())}
+              leftSection={<IconPlus size={16} stroke={1.5} />}
+            >
+              New Entry
+            </Button>
 
-          <NavLink
-            label="Editor"
-            active={mode === 'editor'}
-            mb="xs"
-            onClick={() => {
-              const canEditActiveEntry = activeEntryPath && (isDraftMode || activeEntryPath === sessionEditableEntryPath);
-              if (canEditActiveEntry && activeEntryPath) {
-                navigate(buildEditorRoute(activeEntryPath));
-                return;
-              }
-
-              if (mode !== 'editor' || routeEntryPath) {
-                void openNewEntry(new Date());
-                return;
-              }
-              navigate(ROUTES.editor);
-            }}
-          />
-          <NavLink
-            label="All Entries"
-            active={mode === 'entries'}
-            mb="md"
-            onClick={async () => {
-              if (!confirmDiscardChanges('You have unsaved changes. Continue to entries anyway?')) return;
-
-              await discardStagedForEntry(activeEntryPath);
-              setSessionEditableEntryPath(null);
-              navigate(buildEntriesRoute(currentDirectoryPath));
-            }}
-          />
+            <NavLink
+              label="Editor"
+              leftSection={<IconEdit size={16} stroke={1.5} />}
+              style={{borderRadius: "0.5rem"}}
+              active={mode === 'editor'}
+              mb="xs"
+              onClick={() => {
+                const canEditActiveEntry = activeEntryPath && (isDraftMode || activeEntryPath === sessionEditableEntryPath);
+                if (canEditActiveEntry && activeEntryPath) {
+                  navigate(buildEditorRoute(activeEntryPath));
+                  return;
+                }
+                
+                if (mode !== 'editor' || routeEntryPath) {
+                  void openNewEntry(new Date());
+                  return;
+                }
+                navigate(ROUTES.editor);
+              }}
+              />
+            <NavLink
+              label="All Entries"
+              leftSection={<IconFolder size={16} stroke={1.5} />}
+              style={{borderRadius: "0.5rem"}}
+              active={mode === 'entries'}
+              mb="md"
+              onClick={async () => {
+                if (!confirmDiscardChanges('You have unsaved changes. Continue to entries anyway?')) return;
+                
+                await discardStagedForEntry(activeEntryPath);
+                setSessionEditableEntryPath(null);
+                navigate(buildEntriesRoute(currentDirectoryPath));
+              }}
+              />
+          </div>
+          <div style={{ paddingTop: 'var(--mantine-spacing-sm)', borderTop: '1px solid var(--mantine-color-default-border)' }}>
+            <VaultLockButton onLock={performVaultLock} />
+          </div>
         </AppShell.Navbar>
 
         <AppShell.Main bg="var(--mantine-color-body)">
@@ -852,7 +862,7 @@ export default function App() {
           Unsaved changes will be preserved in memory and restored when you unlock.
         </Text>
         <Group justify="flex-end">
-          <Button color="gray" variant="light" onClick={handleLockVault}>Lock Now</Button>
+          <Button color="gray" variant="light" onClick={performVaultLock}>Lock Now</Button>
           <Button onClick={() => { lastActiveRef.current = Date.now(); closeInactivityModal(); }}>Continue Session</Button>
         </Group>
       </Modal>
