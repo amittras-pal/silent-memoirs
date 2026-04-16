@@ -1,7 +1,7 @@
 # Logout Confirmation and Sidebar Relocation
 
 ## Feature ID: FEAT-0009
-**Status**: Planned  
+**Status**: Completed  
 
 ## Objective
 Move logout into the sidebar and require an explicit confirmation dialog every time, with stronger warning copy when there are pending unsynced changes.

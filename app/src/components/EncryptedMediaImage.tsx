@@ -8,6 +8,7 @@ import {
   parsePendingMediaId,
 } from '../lib/media';
 import { getStagedMediaByPendingId } from '../lib/stagedMedia';
+import { useAppContext } from '../contexts/AppContext';
 
 interface EncryptedMediaImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   src?: string;
@@ -28,6 +29,7 @@ export function EncryptedMediaImage({
   allowPendingResolution = false,
   ...imgProps
 }: EncryptedMediaImageProps) {
+  const { triggerManifestRepair } = useAppContext();
   const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -109,6 +111,10 @@ export function EncryptedMediaImage({
         const message = error instanceof Error ? error.message : 'Unable to decrypt image.';
         setResolvedSrc(null);
         setErrorMessage(message);
+
+        if (message === 'Image not found in vault storage.') {
+          triggerManifestRepair().catch(console.error);
+        }
       })
       .finally(() => {
         if (active) setIsLoading(false);
