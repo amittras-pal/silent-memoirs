@@ -1,7 +1,7 @@
 # Default Vault Instructions File
 
 ## Feature ID: FEAT-0010
-**Status**: Planned  
+**Status**: Completed  
 
 ## Objective
 Automatically place a human-readable instructions file in every vault root directory at creation time, explaining vault structure, safety rules, and manual decryption steps for macOS and Windows.

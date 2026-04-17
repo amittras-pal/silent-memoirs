@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Button, Center, Card, Title, Text, Stack, Alert, CopyButton, PasswordInput } from '@mantine/core';
+import { Button, Center, Card, Title, Text, Stack, Alert, CopyButton, PasswordInput, ScrollArea } from '@mantine/core';
 import { GoogleDriveStorage } from '../lib/storage';
 import { VaultManager } from '../lib/vault';
+import instructionsText from '../assets/vault-directory-instructions.txt?raw';
 
 interface VaultSetupWallProps {
   storage: GoogleDriveStorage;
@@ -81,7 +82,7 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
   if (recoveryKey) {
     return (
       <Center style={{ height: '100vh', backgroundColor: 'var(--mantine-color-body)' }}>
-        <Card shadow="xl" p="xl" radius="md" withBorder style={{ maxWidth: 500, width: '100%' }}>
+        <Card shadow="xl" p="xl" radius="md" withBorder style={{ maxWidth: 700, width: '100%' }}>
           <Stack align="stretch" gap="md">
             <Title order={3}>Save Your Recovery Key</Title>
             <Alert color="red" title="Warning">
@@ -97,8 +98,19 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
                 </Button>
               )}
             </CopyButton>
+
+            <Title order={5} mt="md">Vault Rules & Instructions</Title>
+            <Text size="sm" c="dimmed" mt="-sm">
+              Please read carefully. A copy of these instructions is deposited in your Google Drive folder for future reference.
+            </Text>
+            <ScrollArea h={200} type="always" offsetScrollbars style={{ background: 'var(--mantine-color-dark-8)', borderRadius: '4px', padding: '1rem' }}>
+              <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: '0.85rem' }}>
+                {instructionsText}
+              </pre>
+            </ScrollArea>
+
             <Button onClick={() => onVaultReady(vaultManager)} variant="light" color="gray" mt="md">
-              I have saved the key. Proceed.
+              I understand and have saved the key. Proceed.
             </Button>
           </Stack>
         </Card>
