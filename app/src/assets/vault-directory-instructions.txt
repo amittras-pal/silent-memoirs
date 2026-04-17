@@ -1,0 +1,67 @@
+=============================================================================
+                          SILENT MEMOIRS VAULT
+=============================================================================
+
+This folder belongs to the Silent Memoirs application. It contains your 
+encrypted journal entries and media.
+
+*** IMPORTANT SAFETY WARNING ***
+DO NOT rename, edit, delete or move any files or folders within this directory.
+Doing so may permanently corrupt your journal entries or prevent the app 
+from recognizing your vault.
+
+-----------------------------------------------------------------------------
+1. FILE STRUCTURE EXPLAINED
+-----------------------------------------------------------------------------
+- vault_key.age : Your wrapped vault secret (required by the app for unlocking).
+- vault_pub.txt : Your public key used for encrypting data (used by app).
+- manifest.age  : Encrypted index of all your journal metadata and sync state.
+- YYYY/*.age    : Your encrypted journal entries organized by year.
+- YYYY/media/*  : Encrypted media files attached to your entries.
+
+-----------------------------------------------------------------------------
+2. AUTO-MANIFEST REPAIR & ITS LIMITATIONS
+-----------------------------------------------------------------------------
+If `manifest.age` is accidentally deleted or goes out of sync due to files being missing, Silent Memoirs
+can attempt an "Auto-Manifest Repair" to rebuild your vault index based on 
+the files present in this folder.
+
+LIMITATIONS: 
+- The repair process can recover from *missing* files by omitting them from 
+  the rebuilt manifest. Missing files are not recovered, they're lost. This is 
+  only meant to make sure the app stays in sync with the content in your drive. 
+- However, if any `<id>.age` file is malformed, edited externally, or 
+  corrupted, the application CANNOT repair it. The data inside that corrupted 
+  file will be permanently lost and skipped during repair. 
+
+-----------------------------------------------------------------------------
+3. MANUAL DECRYPTION GUIDE
+-----------------------------------------------------------------------------
+If you ever lose access to the Silent Memoirs app, you can manually decrypt
+your entries using the standard `age` encryption command-line tool.
+
+REQUIREMENT: You MUST have your 128-character Recovery Key that was provided 
+to you when you initialized your vault. Without the Recovery Key, manual 
+decryption is impossible.
+
+STEPS FOR MACOS / LINUX:
+1. Install age (e.g., `brew install age` on macOS).
+2. Save your recovery key into a text file named `identity.txt`. The file 
+   should contain only your key starting with `AGE-SECRET-KEY-`.
+3. Open Terminal and run:
+   age -d -i identity.txt "path/to/encrypted_file.age" > output.json
+
+STEPS FOR WINDOWS:
+1. Install age (download the Windows release from the GitHub link below).
+2. Save your recovery key into a text file named `identity.txt`. The file 
+   should contain only your key starting with `AGE-SECRET-KEY-`.
+3. Open Command Prompt or PowerShell and run:
+   age -d -i identity.txt "path\to\encrypted_file.age" > output.json
+
+NOTE: The decrypted `output.json` file will contain your plaintext journal 
+entry. It is no longer encrypted, so please store it securely.
+
+-----------------------------------------------------------------------------
+4. EXTERNAL RESOURCES
+-----------------------------------------------------------------------------
+- Age Encryption Tool: https://github.com/FiloSottile/age

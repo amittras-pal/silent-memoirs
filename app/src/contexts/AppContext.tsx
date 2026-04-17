@@ -158,6 +158,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const engine = new SyncEngine(storage, vaultManager.identity!);
         if (cancelled) return;
         setSyncEngine(engine);
+        engine.ensureInstructionsFile().catch((e) => console.error("Failed to backfill instructions file:", e));
       };
       loadSync().catch(handleAuthFailure);
       return () => { cancelled = true; };

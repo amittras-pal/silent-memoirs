@@ -2,6 +2,8 @@ import type { StorageProvider } from './storage';
 import type { AgeIdentity } from './crypto';
 import { generateAgeIdentity, wrapSecretKey, unwrapSecretKey, registerWebAuthnPrf, authenticateWebAuthnPrf, deriveKeyFromPassword } from './crypto';
 
+import instructionsText from '../assets/vault-directory-instructions.txt?raw';
+
 const VAULT_KEY_FILE = 'vault_key.age';
 
 export class VaultManager {
@@ -56,6 +58,12 @@ export class VaultManager {
     await this.storage.uploadFile(VAULT_KEY_FILE, wrappedBytes);
     // Write the plaintext public key
     await this.storage.uploadFile('vault_pub.txt', new TextEncoder().encode(identity.publicKey), 'text/plain');
+
+    try {
+      await this.storage.uploadFile('README-Silent-Memoirs.txt', new TextEncoder().encode(instructionsText), 'text/plain');
+    } catch (e) {
+      throw new Error("Failed to upload vault instructions file. Vault initialization aborted.");
+    }
 
     this.currentIdentity = identity;
 

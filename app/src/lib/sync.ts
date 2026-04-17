@@ -4,6 +4,8 @@ import type { AgeIdentity } from './crypto';
 import { encryptData, decryptData } from './crypto';
 import { resolveEntryTitle } from './entryTitle';
 
+import instructionsText from '../assets/vault-directory-instructions.txt?raw';
+
 const MANIFEST_FILE = 'manifest.age';
 
 export interface EntryMetadata {
@@ -56,6 +58,21 @@ export class SyncEngine {
   constructor(storage: StorageProvider, identity: AgeIdentity) {
     this.storage = storage;
     this.identity = identity;
+  }
+
+  public async ensureInstructionsFile(): Promise<void> {
+    try {
+      const files = await this.storage.listFiles('');
+      if (!files.includes('README-Silent-Memoirs.txt')) {
+        await this.storage.uploadFile(
+          'README-Silent-Memoirs.txt',
+          new TextEncoder().encode(instructionsText),
+          'text/plain'
+        );
+      }
+    } catch (error) {
+      console.warn("Failed to backfill instructions file:", error);
+    }
   }
 
   private normalizeDirectoryPath(path: string | null | undefined): string {
