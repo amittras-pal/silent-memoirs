@@ -5,6 +5,7 @@ import { GoogleDriveStorage } from '../lib/storage';
 
 export function clearCachedGoogleToken() {
   localStorage.removeItem('google_access_token');
+  localStorage.removeItem('token_issued_at');
 }
 
 interface AuthWallProps {
@@ -20,6 +21,7 @@ function LoginButton({ onAuthenticated }: AuthWallProps) {
       setLoading(true);
       
       localStorage.setItem('google_access_token', tokenResponse.access_token);
+      localStorage.setItem('token_issued_at', Date.now().toString());
 
       const storage = new GoogleDriveStorage(tokenResponse.access_token);
       onAuthenticated(storage);

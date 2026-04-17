@@ -1,7 +1,7 @@
 # Perpetual Session Implementation for PWA
 
 ## Feature ID: FEAT-0006
-**Status**: Planned  
+**Status**: Completed  
 
 ## Objective
 To achieve a "perpetual session" experience without the complexity of a backend. Leverage Google Identity Services (GIS) invisible promptless checks to silently renew access tokens.

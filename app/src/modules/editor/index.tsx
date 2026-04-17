@@ -1,39 +1,33 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
 import { ActionIcon, Center, Flex, Group, Loader, Text, TextInput, Tooltip } from '@mantine/core';
-import { DateInput } from '@mantine/dates';
-import dayjs from 'dayjs';
+import { DateTimePicker } from '@mantine/dates';
 import { IconDeviceFloppy, IconX } from '@tabler/icons-react';
+import dayjs from 'dayjs';
+import { useCallback, useEffect, useMemo } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
-import { useAppContext } from '../../contexts/AppContext';
-import { ROUTES, buildViewerRoute, buildEntriesRoute, decodeEntryPath, buildEditorRoute } from '../../lib/routes';
 import { Editor } from '../../components/Editor';
+import { useAppContext } from '../../contexts/AppContext';
 import { buildDefaultEntryTitle, isDateSyncedEntryTitle, parseEntryDate, resolveEntryTitle } from '../../lib/entryTitle';
-import { SyncEngine } from '../../lib/sync';
-import { 
-  createEncryptedMediaPathAllocator, 
-  extractPendingMediaIds, 
-  replacePendingMediaPaths, 
-  encryptAndUploadImage,
+import {
   blobToUint8Array,
-  extractEncryptedMediaPaths
+  createEncryptedMediaPathAllocator,
+  encryptAndUploadImage,
+  extractEncryptedMediaPaths,
+  extractPendingMediaIds,
+  replacePendingMediaPaths
 } from '../../lib/media';
-import { 
-  deleteUnreferencedStagedMediaForEntry, 
-  getStagedMediaByPendingIds, 
-  markStagedMediaUploadedPath, 
-  deleteStagedMediaForEntry
+import { ROUTES, buildEditorRoute, buildEntriesRoute, buildViewerRoute, decodeEntryPath } from '../../lib/routes';
+import {
+  deleteStagedMediaForEntry,
+  deleteUnreferencedStagedMediaForEntry,
+  getStagedMediaByPendingIds,
+  markStagedMediaUploadedPath
 } from '../../lib/stagedMedia';
 import { UnauthorizedError, type JournalEntry } from '../../lib/storage';
+import { SyncEngine } from '../../lib/sync';
 
-function extractTimeToken(value: string): string {
-  const match = /_(\d{2}-\d{2})$/.exec(value);
-  if (match) return match[1];
-  return dayjs().format('HH-mm');
-}
-
-function composeEditorDate(date: Date, currentValue: string): string {
-  return `${dayjs(date).format('YYYY-MM-DD')}_${extractTimeToken(currentValue)}`;
+function composeEditorDate(date: Date): string {
+  return dayjs(date).format('YYYY-MM-DD_HH-mm');
 }
 
 function getParentDirectory(path: string | null): string {
@@ -70,18 +64,10 @@ export default function EditorModule() {
     confirmDiscardChanges,
     discardStagedForEntry,
     handleAuthFailure,
-    isDirty,
-    triggerManifestRepair
   } = useAppContext();
 
   const navigate = useNavigate();
   const location = useLocation();
-
-  const [isLoadingEntry, setIsLoadingEntry] = useState(false);
-
-  // Reconciliation refs
-  const isNewEntryRef = useRef(false);
-  const skipNextEntryFetchPathRef = useRef<string | null>(null);
 
   const routeQuery = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const routeEntryPath = useMemo(() => decodeEntryPath(routeQuery.get('e')), [routeQuery]);
@@ -111,8 +97,6 @@ export default function EditorModule() {
     const path = SyncEngine.getEntryPath(dateStr);
     const defaultTitle = buildDefaultEntryTitle(dateStr);
 
-    isNewEntryRef.current = true;
-    setIsLoadingEntry(false);
     setIsDraftMode(true);
     setSessionEditableEntryPath(null);
     setActiveEntryPath(path);
@@ -162,71 +146,6 @@ export default function EditorModule() {
     navigate(buildViewerRoute(routeEntryPath), { replace: true });
   }, [
     routeEntryPath, activeEntryPath, syncEngine, isDraftMode, sessionEditableEntryPath, forceNew, navigate, startDraftForDate
-  ]);
-
-  // Fetch entry logic (only applies if we are allowed to edit it and haven't fetched it)
-  useEffect(() => {
-    if (!syncEngine || !activeEntryPath) {
-      setIsLoadingEntry(false);
-      return;
-    }
-
-    if (skipNextEntryFetchPathRef.current === activeEntryPath) {
-      skipNextEntryFetchPathRef.current = null;
-      setIsLoadingEntry(false);
-      return;
-    }
-
-    if (isNewEntryRef.current) {
-      isNewEntryRef.current = false;
-      setIsLoadingEntry(false);
-      return;
-    }
-
-    // Protection against overwriting unsaved changes during remounts (like when unlocking)
-    if (isDirty) {
-      setIsLoadingEntry(false);
-      return;
-    }
-
-    let cancelled = false;
-    setIsLoadingEntry(true);
-
-    syncEngine.fetchEntry(activeEntryPath)
-      .then((entry) => {
-        if (cancelled) return;
-        if (!entry) {
-          triggerManifestRepair().then(() => {
-            navigate(ROUTES.entries, { replace: true });
-          });
-          return;
-        }
-
-        const resolvedTitle = resolveEntryTitle(entry.title, entry.date);
-
-        setIsDraftMode(false);
-        setActiveEntryId(entry.id);
-        setEditorTitle(resolvedTitle);
-        setEditorContent(entry.plaintext);
-        setEditorDate(entry.date);
-        setInitialEditorTitle(resolvedTitle);
-        setInitialEditorContent(entry.plaintext);
-        setInitialEditorDate(entry.date);
-      })
-      .catch((e) => {
-         if(!cancelled) handleAuthFailure(e);
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoadingEntry(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    activeEntryPath, handleAuthFailure, syncEngine, isDirty,
-    setActiveEntryId, setEditorContent, setEditorDate, setEditorTitle,
-    setInitialEditorContent, setInitialEditorDate, setInitialEditorTitle, setIsDraftMode
   ]);
 
   // Leave session editing privileges when unmounting editor completely
@@ -314,8 +233,6 @@ export default function EditorModule() {
       const newPath = await syncEngine.saveEntry(journalEntry);
       await deleteStagedMediaForEntry(entryPathAtSaveStart);
 
-      skipNextEntryFetchPathRef.current = newPath;
-
       setIsDraftMode(false);
       setSessionEditableEntryPath(newPath);
       setActiveEntryPath(newPath);
@@ -362,21 +279,21 @@ export default function EditorModule() {
           style={{ flex: 1 }}
         />
 
-        <DateInput
+        <DateTimePicker
           value={editorDateValue}
           onChange={(value) => {
             if (!value) return;
             const nextDate = typeof value === 'string' ? new Date(value) : value;
             if (Number.isNaN(nextDate.getTime())) return;
 
-            const nextDateValue = composeEditorDate(nextDate, editorDate);
+            const nextDateValue = composeEditorDate(nextDate);
             if (isDateSyncedEntryTitle(editorTitle, editorDate)) {
               setEditorTitle(buildDefaultEntryTitle(nextDateValue));
             }
             setEditorDate(nextDateValue);
           }}
           placeholder="Entry Date"
-          valueFormat="YYYY-MM-DD"
+          valueFormat="YYYY-MM-DD HH:mm"
           clearable={false}
           maxDate={new Date()}
           w={170}
@@ -398,7 +315,7 @@ export default function EditorModule() {
       </Flex>
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        {isLoadingEntry || !vaultManager ? (
+        {!vaultManager ? (
           <Center style={{ flex: 1 }}>
             <Loader variant="dots" />
           </Center>

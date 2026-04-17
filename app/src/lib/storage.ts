@@ -32,19 +32,47 @@ export class GoogleDriveStorage implements StorageProvider {
   private accessToken: string;
   private pathCache: Map<string, string> = new Map(); // path -> fileId
   private rootFolder = 'silent-memoirs';
+  public onTokenRefresh?: () => Promise<string>;
 
   constructor(accessToken: string) {
     this.accessToken = accessToken;
   }
 
-  private async fetchAPI(endpoint: string, options: RequestInit = {}) {
-    const res = await fetch(`https://www.googleapis.com/drive/v3${endpoint}`, {
+  public updateToken(newToken: string) {
+    this.accessToken = newToken;
+  }
+
+  private async authenticatedFetch(url: string, options: RequestInit = {}): Promise<Response> {
+    let res = await fetch(url, {
       ...options,
       headers: {
-        Authorization: `Bearer ${this.accessToken}`,
         ...options.headers,
+        Authorization: `Bearer ${this.accessToken}`,
       },
     });
+
+    if (res.status === 401 && this.onTokenRefresh) {
+      try {
+        const newToken = await this.onTokenRefresh();
+        this.updateToken(newToken);
+        res = await fetch(url, {
+          ...options,
+          headers: {
+            ...options.headers,
+            Authorization: `Bearer ${this.accessToken}`,
+          },
+        });
+      } catch (e) {
+        console.error("Token refresh failed during intercept", e);
+        throw new UnauthorizedError();
+      }
+    }
+
+    return res;
+  }
+
+  private async fetchAPI(endpoint: string, options: RequestInit = {}) {
+    const res = await this.authenticatedFetch(`https://www.googleapis.com/drive/v3${endpoint}`, options);
     if (!res.ok) {
       if (res.status === 401) throw new UnauthorizedError();
       if (res.status === 404) return null;
@@ -101,10 +129,9 @@ export class GoogleDriveStorage implements StorageProvider {
       mimeType: 'application/vnd.google-apps.folder',
       parents: [parentId]
     };
-    const res = await fetch('https://www.googleapis.com/drive/v3/files', {
+    const res = await this.authenticatedFetch('https://www.googleapis.com/drive/v3/files', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${this.accessToken}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(metadata)
@@ -159,11 +186,8 @@ export class GoogleDriveStorage implements StorageProvider {
       ? `https://www.googleapis.com/upload/drive/v3/files/${existingId}?uploadType=multipart`
       : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
 
-    const res = await fetch(url, {
+    const res = await this.authenticatedFetch(url, {
       method: existingId ? 'PATCH' : 'POST',
-      headers: {
-        Authorization: `Bearer ${this.accessToken}`,
-      },
       body: form
     });
 

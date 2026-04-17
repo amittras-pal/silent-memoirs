@@ -25,6 +25,7 @@ import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAppContext } from '../contexts/AppContext';
 import { ROUTES, buildEditorRoute } from '../lib/routes';
 import { LogoutButton } from './LogoutButton';
+import { SessionTimerWidget } from './SessionTimerWidget';
 import { VaultLockButton } from './VaultLockButton';
 
 export function ProtectedLayout() {
@@ -95,6 +96,7 @@ export function ProtectedLayout() {
           </Group>
           <Group>
             {/* <DebugManifestButton /> */}
+            <SessionTimerWidget />
             <Tooltip label="Toggle theme">
               <ActionIcon onClick={toggleColorScheme} variant="default" size="lg" radius="md">
                 {colorScheme === 'dark' ? <IconSun size={20} stroke={1.5} /> : <IconMoon size={20} stroke={1.5} />}
