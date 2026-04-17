@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { useNavigate } from 'react-router-dom';
 
 import { clearCachedGoogleToken } from '../components/AuthWall';
+import { useSessionManager } from '../components/SessionManager';
 import {
   clearMediaImageCache,
   clearMediaUploadPathCursor
@@ -66,8 +67,17 @@ const AppContext = createContext<AppContextType | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
+  const { triggerRefresh } = useSessionManager();
 
-  const [storage, setStorage] = useState<GoogleDriveStorage | null>(null);
+  const [storage, _setStorage] = useState<GoogleDriveStorage | null>(null);
+  
+  const setStorage = useCallback((s: GoogleDriveStorage | null) => {
+    if (s) {
+      s.onTokenRefresh = () => triggerRefresh(true);
+    }
+    _setStorage(s);
+  }, [triggerRefresh]);
+
   const [vaultManager, setVaultManager] = useState<VaultManager | null>(null);
   const [syncEngine, setSyncEngine] = useState<SyncEngine | null>(null);
 
@@ -106,7 +116,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [storage]);
 
   const resetAppState = useCallback(() => {
-    setStorage(null);
+    _setStorage(null);
     setVaultManager(null);
     setSyncEngine(null);
     setIsDirty(false);
