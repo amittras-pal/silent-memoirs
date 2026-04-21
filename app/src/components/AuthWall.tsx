@@ -1,11 +1,20 @@
 import { Button, Card, Center, Stack, Text, Title } from '@mantine/core';
 import { GoogleOAuthProvider, useGoogleLogin } from '@react-oauth/google';
 import { useEffect, useState } from 'react';
+import {
+  cacheGoogleUserProfile,
+  clearCachedGoogleUserProfile,
+  fetchGoogleUserProfile,
+  GOOGLE_OAUTH_SCOPE,
+  loadCachedGoogleUserProfile,
+  notifyGoogleTokenIssued,
+} from '../lib/googleAuth';
 import { GoogleDriveStorage } from '../lib/storage';
 
 export function clearCachedGoogleToken() {
   localStorage.removeItem('google_access_token');
   localStorage.removeItem('token_issued_at');
+  clearCachedGoogleUserProfile();
 }
 
 interface AuthWallProps {
@@ -16,12 +25,21 @@ function LoginButton({ onAuthenticated }: AuthWallProps) {
   const [loading, setLoading] = useState(false);
 
   const login = useGoogleLogin({
-    scope: 'https://www.googleapis.com/auth/drive.file',
-    onSuccess: (tokenResponse) => {
+    scope: GOOGLE_OAUTH_SCOPE,
+    onSuccess: async (tokenResponse) => {
       setLoading(true);
-      
+
       localStorage.setItem('google_access_token', tokenResponse.access_token);
-      localStorage.setItem('token_issued_at', Date.now().toString());
+      const issuedAt = Date.now();
+      localStorage.setItem('token_issued_at', issuedAt.toString());
+      notifyGoogleTokenIssued(issuedAt);
+
+      try {
+        const profile = await fetchGoogleUserProfile(tokenResponse.access_token);
+        cacheGoogleUserProfile(profile);
+      } catch (error) {
+        console.warn('Unable to fetch Google user profile during login.', error);
+      }
 
       const storage = new GoogleDriveStorage(tokenResponse.access_token);
       onAuthenticated(storage);
@@ -56,6 +74,16 @@ export function AuthWall({ onAuthenticated }: AuthWallProps) {
     if (cachedToken) {
       const storage = new GoogleDriveStorage(cachedToken);
       onAuthenticated(storage);
+
+      if (!loadCachedGoogleUserProfile()) {
+        void fetchGoogleUserProfile(cachedToken)
+          .then((profile) => {
+            cacheGoogleUserProfile(profile);
+          })
+          .catch((error) => {
+            console.warn('Unable to fetch Google user profile from cached token.', error);
+          });
+      }
     }
   }, [onAuthenticated]);
 

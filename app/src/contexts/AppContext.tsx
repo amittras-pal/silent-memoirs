@@ -6,6 +6,11 @@ import { useNavigate } from 'react-router-dom';
 import { clearCachedGoogleToken } from '../components/AuthWall';
 import { useSessionManager } from '../components/SessionManager';
 import {
+  GOOGLE_PROFILE_UPDATED_EVENT,
+  loadCachedGoogleUserProfile,
+  type GoogleUserProfile,
+} from '../lib/googleAuth';
+import {
   clearMediaImageCache,
   clearMediaUploadPathCursor
 } from '../lib/media';
@@ -16,14 +21,20 @@ import {
 } from '../lib/stagedMedia';
 import { UnauthorizedError, type GoogleDriveStorage } from '../lib/storage';
 import { SyncEngine } from '../lib/sync';
-import { VaultManager } from '../lib/vault';
+import { VaultManager, type SessionAuthMethod } from '../lib/vault';
 
 interface AppContextType {
   storage: GoogleDriveStorage | null;
   setStorage: (s: GoogleDriveStorage | null) => void;
+  userProfile: GoogleUserProfile | null;
+  setUserProfile: (profile: GoogleUserProfile | null) => void;
   vaultManager: VaultManager | null;
   setVaultManager: (v: VaultManager | null) => void;
   syncEngine: SyncEngine | null;
+  currentSessionAuthMethod: SessionAuthMethod | null;
+  currentSessionAuthSlotId: string | null;
+  setSessionAuthContext: (method: SessionAuthMethod | null, slotId?: string | null) => void;
+  clearSessionAuthContext: () => void;
 
   isDirty: boolean;
   setIsDirty: (val: boolean) => void;
@@ -70,6 +81,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const { triggerRefresh } = useSessionManager();
 
   const [storage, _setStorage] = useState<GoogleDriveStorage | null>(null);
+  const [userProfile, setUserProfile] = useState<GoogleUserProfile | null>(() => loadCachedGoogleUserProfile());
   
   const setStorage = useCallback((s: GoogleDriveStorage | null) => {
     if (s) {
@@ -80,6 +92,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const [vaultManager, setVaultManager] = useState<VaultManager | null>(null);
   const [syncEngine, setSyncEngine] = useState<SyncEngine | null>(null);
+  const [currentSessionAuthMethod, setCurrentSessionAuthMethod] = useState<SessionAuthMethod | null>(null);
+  const [currentSessionAuthSlotId, setCurrentSessionAuthSlotId] = useState<string | null>(null);
 
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -96,10 +110,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [sessionEditableEntryPath, setSessionEditableEntryPath] = useState<string | null>(null);
 
   const lastActiveRef = useRef<number>(Date.now());
+  const handleAuthFailureRef = useRef<(err: unknown) => void>(() => {});
+  const syncEngineIdentityRef = useRef<string | null>(null);
   const [inactivityModalOpened, { open: openInactivityModal, close: closeInactivityModal }] = useDisclosure(false);
   const [countdown, setCountdown] = useState(30);
 
   const [repairStatus, setRepairStatus] = useState<string | null>(null);
+
+  const setSessionAuthContext = useCallback((method: SessionAuthMethod | null, slotId: string | null = null) => {
+    setCurrentSessionAuthMethod(method);
+    setCurrentSessionAuthSlotId(slotId);
+  }, []);
+
+  const clearSessionAuthContext = useCallback(() => {
+    setCurrentSessionAuthMethod(null);
+    setCurrentSessionAuthSlotId(null);
+  }, []);
 
   const confirmDiscardChanges = useCallback((message: string): boolean => {
     if (!isDirty) return true;
@@ -117,8 +143,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const resetAppState = useCallback(() => {
     _setStorage(null);
+    setUserProfile(null);
     setVaultManager(null);
     setSyncEngine(null);
+    syncEngineIdentityRef.current = null;
     setIsDirty(false);
     setIsSaving(false);
     setActiveEntryPath(null);
@@ -131,8 +159,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setInitialEditorDate('');
     setIsDraftMode(false);
     setSessionEditableEntryPath(null);
+    clearSessionAuthContext();
     closeInactivityModal();
-  }, [closeInactivityModal]);
+  }, [clearSessionAuthContext, closeInactivityModal]);
 
   const handleLogout = useCallback(() => {
     clearMediaImageCache();
@@ -150,30 +179,63 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [handleLogout]);
 
+  useEffect(() => {
+    const handleProfileUpdate = (e: Event) => {
+      const customEvent = e as CustomEvent<GoogleUserProfile | null>;
+      setUserProfile(customEvent.detail ?? null);
+    };
+
+    window.addEventListener(GOOGLE_PROFILE_UPDATED_EVENT, handleProfileUpdate as EventListener);
+    return () => {
+      window.removeEventListener(GOOGLE_PROFILE_UPDATED_EVENT, handleProfileUpdate as EventListener);
+    };
+  }, []);
+
   const performVaultLock = useCallback(() => {
     clearMediaImageCache();
     clearMediaUploadPathCursor();
     void clearAllStagedMedia().catch((error) => console.error('Failed to clear staged media on vault lock', error));
     setVaultManager(null);
     setSyncEngine(null);
+    syncEngineIdentityRef.current = null;
+    clearSessionAuthContext();
     closeInactivityModal();
     navigate(ROUTES.unlock, { replace: true });
-  }, [closeInactivityModal, navigate]);
+  }, [clearSessionAuthContext, closeInactivityModal, navigate]);
+
+  useEffect(() => {
+    handleAuthFailureRef.current = handleAuthFailure;
+  }, [handleAuthFailure]);
 
   // SyncEngine initialization
   useEffect(() => {
-    if (vaultManager && storage) {
-      let cancelled = false;
-      const loadSync = async () => {
-        const engine = new SyncEngine(storage, vaultManager.identity!);
-        if (cancelled) return;
-        setSyncEngine(engine);
-        engine.ensureInstructionsFile().catch((e) => console.error("Failed to backfill instructions file:", e));
-      };
-      loadSync().catch(handleAuthFailure);
-      return () => { cancelled = true; };
+    if (!vaultManager || !storage) {
+      syncEngineIdentityRef.current = null;
+      return;
     }
-  }, [handleAuthFailure, storage, vaultManager]);
+
+    const identity = vaultManager.identity;
+    if (!identity) return;
+
+    if (syncEngine && syncEngineIdentityRef.current === identity.publicKey) {
+      return;
+    }
+
+    let cancelled = false;
+    const loadSync = async () => {
+      const engine = new SyncEngine(storage, identity);
+      if (cancelled) return;
+
+      syncEngineIdentityRef.current = identity.publicKey;
+      setSyncEngine(engine);
+      engine.ensureInstructionsFile().catch((e) => console.error('Failed to backfill instructions file:', e));
+    };
+
+    loadSync().catch((error) => handleAuthFailureRef.current(error));
+    return () => {
+      cancelled = true;
+    };
+  }, [storage, syncEngine, vaultManager]);
 
   useEffect(() => {
     const dirty = activeEntryPath !== null && (
@@ -228,17 +290,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [inactivityModalOpened, openInactivityModal, performVaultLock, vaultManager]);
 
   useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        const idleTime = Date.now() - lastActiveRef.current;
-        if (idleTime >= 10 * 60 * 1000 && vaultManager) {
-          performVaultLock();
-        }
-      }
+    const refreshManifestIfNeeded = () => {
+      if (!syncEngine || !vaultManager) return;
+
+      syncEngine.refreshManifestIfStale().catch((error) => {
+        console.error('Failed to refresh manifest after focus', error);
+      });
     };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+
+      const idleTime = Date.now() - lastActiveRef.current;
+      if (idleTime >= 10 * 60 * 1000 && vaultManager) {
+        performVaultLock();
+        return;
+      }
+
+      refreshManifestIfNeeded();
+    };
+
+    const handleWindowFocus = () => {
+      if (document.visibilityState !== 'visible') return;
+      refreshManifestIfNeeded();
+    };
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [performVaultLock, vaultManager]);
+    window.addEventListener('focus', handleWindowFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [performVaultLock, syncEngine, vaultManager]);
 
   const getResumeRoute = useCallback(() => {
     if (activeEntryPath) {
@@ -265,8 +348,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const value = {
     storage, setStorage,
+    userProfile, setUserProfile,
     vaultManager, setVaultManager,
     syncEngine,
+    currentSessionAuthMethod,
+    currentSessionAuthSlotId,
+    setSessionAuthContext,
+    clearSessionAuthContext,
     isDirty, setIsDirty,
     isSaving, setIsSaving,
     activeEntryPath, setActiveEntryPath,

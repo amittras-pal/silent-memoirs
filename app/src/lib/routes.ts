@@ -4,6 +4,7 @@ export const ROUTES = {
   editor: '/editor',
   entries: '/entries',
   viewer: '/viewer',
+  settings: '/settings',
 };
 
 function normalizePath(value: string | null | undefined): string {

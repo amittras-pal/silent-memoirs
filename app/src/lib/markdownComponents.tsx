@@ -1,5 +1,5 @@
 import { Blockquote } from '@mantine/core';
-import { IconQuote } from '@tabler/icons-react';
+import { IconBlockquote } from '@tabler/icons-react';
 import { EncryptedMediaImage } from '../components/EncryptedMediaImage';
 import type { StorageProvider } from './storage';
 
@@ -44,7 +44,7 @@ export function createMarkdownComponents(
       <Blockquote
         color="indigo"
         py="xs"
-        icon={<IconQuote size={16} />}
+        icon={<IconBlockquote size={18} />}
         iconSize={30}
         styles={{ root: { borderLeftColor: "var(--mantine-color-blue-6)" } }}
       >

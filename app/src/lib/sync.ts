@@ -1,5 +1,5 @@
 import { isSupportedImageExtension } from './media';
-import type { JournalEntry, StorageDirectoryItem, StorageProvider } from './storage';
+import type { JournalEntry, StorageProvider } from './storage';
 import type { AgeIdentity } from './crypto';
 import { encryptData, decryptData } from './crypto';
 import { resolveEntryTitle } from './entryTitle';
@@ -7,6 +7,7 @@ import { resolveEntryTitle } from './entryTitle';
 import instructionsText from '../assets/vault-directory-instructions.txt?raw';
 
 const MANIFEST_FILE = 'manifest.age';
+const MANIFEST_CACHE_STALE_MS = 5 * 60 * 1000;
 
 export interface EntryMetadata {
   id: string;
@@ -51,9 +52,20 @@ interface ManifestFile {
   directories: EntryDirectory[];
 }
 
+interface ExplorerIndex {
+  knownPaths: Set<string>;
+  foldersByParentPath: Map<string, EntryDirectory[]>;
+  entriesByParentPath: Map<string, EntryMetadata[]>;
+  mediaByParentPath: Map<string, MediaFileMetadata[]>;
+}
+
 export class SyncEngine {
   private storage: StorageProvider;
   private identity: AgeIdentity;
+  private manifestCache: ManifestFile | null = null;
+  private manifestCacheLoadedAt = 0;
+  private explorerIndex: ExplorerIndex | null = null;
+  private manifestLoadPromise: Promise<ManifestFile> | null = null;
 
   constructor(storage: StorageProvider, identity: AgeIdentity) {
     this.storage = storage;
@@ -138,68 +150,105 @@ export class SyncEngine {
     return [...files].sort((a, b) => b.name.localeCompare(a.name));
   }
 
-  private async isKnownDirectoryPath(path: string, manifest: ManifestFile): Promise<boolean> {
-    const normalizedPath = this.normalizeDirectoryPath(path);
-    if (!normalizedPath) return true;
-
-    if (manifest.directories.some((folder) => folder.path === normalizedPath)) {
-      return true;
+  private addToGroupedMap<K, V>(map: Map<K, V[]>, key: K, value: V): void {
+    const existing = map.get(key);
+    if (existing) {
+      existing.push(value);
+      return;
     }
 
-    const parentPath = this.getParentPath(normalizedPath);
-    const targetName = normalizedPath.split('/').pop() || normalizedPath;
-    const siblings = await this.storage.listDirectoryItems(parentPath);
-    return siblings.some((item) => item.isFolder && item.name === targetName);
+    map.set(key, [value]);
   }
 
-  private mergeManifestAndStorageFolders(
-    currentPath: string,
-    manifestFolders: EntryDirectory[],
-    storageItems: StorageDirectoryItem[],
-  ): EntryDirectory[] {
-    const merged = new Map<string, EntryDirectory>();
+  private buildMediaFilesFromEntries(entries: EntryMetadata[]): Map<string, MediaFileMetadata[]> {
+    const uniqueMedia = new Map<string, MediaFileMetadata>();
 
-    for (const folder of manifestFolders) {
-      merged.set(folder.path, folder);
+    for (const entry of entries) {
+      const mediaIds = Array.isArray(entry.mediaIds) ? entry.mediaIds : [];
+
+      for (const rawMediaPath of mediaIds) {
+        if (typeof rawMediaPath !== 'string') continue;
+
+        const mediaPath = this.normalizeDirectoryPath(rawMediaPath);
+        if (!mediaPath) continue;
+
+        const extension = mediaPath.split('.').pop()?.toLowerCase();
+        if (!extension || !isSupportedImageExtension(extension)) continue;
+
+        const parentPath = this.normalizeDirectoryPath(this.getParentPath(mediaPath));
+        const existing = uniqueMedia.get(mediaPath);
+
+        if (existing) {
+          if (entry.updatedAt > existing.updatedAt) {
+            existing.updatedAt = entry.updatedAt;
+          }
+          continue;
+        }
+
+        uniqueMedia.set(mediaPath, {
+          path: mediaPath,
+          name: mediaPath.split('/').pop() || mediaPath,
+          parentPath,
+          year: mediaPath.split('/')[0] || '',
+          updatedAt: entry.updatedAt,
+        });
+      }
     }
 
-    for (const item of storageItems) {
-      if (!item.isFolder) continue;
-      if (merged.has(item.path)) continue;
-
-      merged.set(item.path, {
-        path: item.path,
-        name: item.name,
-        parentPath: currentPath,
-        folderCount: 0,
-        entryCount: 0,
-        updatedAt: item.updatedAt,
-      });
+    const mediaByParentPath = new Map<string, MediaFileMetadata[]>();
+    for (const media of uniqueMedia.values()) {
+      this.addToGroupedMap(mediaByParentPath, media.parentPath, media);
     }
 
-    return this.sortFolderChildren([...merged.values()]);
+    for (const [parentPath, files] of mediaByParentPath.entries()) {
+      mediaByParentPath.set(parentPath, this.sortMediaFiles(files));
+    }
+
+    return mediaByParentPath;
   }
 
-  private buildMediaFilesForDirectory(currentPath: string, storageItems: StorageDirectoryItem[]): MediaFileMetadata[] {
-    const isMediaDirectory = /(^|\/)media$/.test(currentPath);
-    if (!isMediaDirectory) return [];
+  private buildExplorerIndex(manifest: ManifestFile): ExplorerIndex {
+    const foldersByParentPath = new Map<string, EntryDirectory[]>();
+    const entriesByParentPath = new Map<string, EntryMetadata[]>();
 
-    const files = storageItems
-      .filter((item) => !item.isFolder)
-      .filter((item) => {
-        const extension = item.name.split('.').pop();
-        if (!extension) return false;
-        return isSupportedImageExtension(extension.toLowerCase());
-      })
-      .map((item) => ({
-        path: item.path,
-        name: item.name,
-        parentPath: currentPath,
-        year: item.path.split('/')[0] || '',
-        updatedAt: item.updatedAt,
-      }));
+    for (const folder of manifest.directories) {
+      if (folder.path === folder.parentPath) continue;
+      this.addToGroupedMap(foldersByParentPath, folder.parentPath, folder);
+    }
 
-    return this.sortMediaFiles(files);
+    for (const [parentPath, folders] of foldersByParentPath.entries()) {
+      foldersByParentPath.set(parentPath, this.sortFolderChildren(folders));
+    }
+
+    for (const entry of manifest.entries) {
+      this.addToGroupedMap(entriesByParentPath, entry.parentPath, entry);
+    }
+
+    for (const [parentPath, entries] of entriesByParentPath.entries()) {
+      entriesByParentPath.set(parentPath, this.sortMetadata(entries));
+    }
+
+    const knownPaths = new Set<string>(manifest.directories.map((folder) => folder.path));
+    knownPaths.add('');
+
+    return {
+      knownPaths,
+      foldersByParentPath,
+      entriesByParentPath,
+      mediaByParentPath: this.buildMediaFilesFromEntries(manifest.entries),
+    };
+  }
+
+  private setManifestCache(manifest: ManifestFile): ManifestFile {
+    this.manifestCache = manifest;
+    this.manifestCacheLoadedAt = Date.now();
+    this.explorerIndex = this.buildExplorerIndex(manifest);
+    return manifest;
+  }
+
+  private isManifestCacheStale(maxAgeMs: number): boolean {
+    if (!this.manifestCache) return true;
+    return Date.now() - this.manifestCacheLoadedAt > maxAgeMs;
   }
 
   private buildDirectories(entries: EntryMetadata[]): EntryDirectory[] {
@@ -340,21 +389,42 @@ export class SyncEngine {
     };
   }
 
-  private async writeManifest(entries: EntryMetadata[]): Promise<void> {
+  private async writeManifest(entries: EntryMetadata[]): Promise<ManifestFile> {
     const payload = this.createManifest(entries);
 
     const encrypted = await encryptData(this.identity.publicKey, JSON.stringify(payload));
     await this.storage.uploadFile(MANIFEST_FILE, encrypted);
+    return this.setManifestCache(payload);
   }
 
-  private async getManifest(): Promise<ManifestFile> {
-    const manifest = await this.readManifest();
-    if (manifest) {
-      return manifest;
+  private async getManifest(forceRefresh = false): Promise<ManifestFile> {
+    if (!forceRefresh && this.manifestCache) {
+      return this.manifestCache;
     }
 
-    const entries = await this.rebuildManifest();
-    return this.createManifest(entries);
+    if (this.manifestLoadPromise) {
+      return this.manifestLoadPromise;
+    }
+
+    this.manifestLoadPromise = (async () => {
+      const manifest = await this.readManifest();
+      if (manifest) {
+        return this.setManifestCache(manifest);
+      }
+
+      const entries = await this.rebuildManifest();
+      if (this.manifestCache) {
+        return this.manifestCache;
+      }
+
+      return this.setManifestCache(this.createManifest(entries));
+    })();
+
+    try {
+      return await this.manifestLoadPromise;
+    } finally {
+      this.manifestLoadPromise = null;
+    }
   }
 
   // Generate entry path depending on the date (e.g. 2024-04-08_12-30 -> 2024/2024-04-08_12-30.age)
@@ -398,31 +468,30 @@ export class SyncEngine {
     return await this.getManifest();
   }
 
+  public async refreshManifestIfStale(maxAgeMs = MANIFEST_CACHE_STALE_MS): Promise<boolean> {
+    if (!this.isManifestCacheStale(maxAgeMs)) {
+      return false;
+    }
+
+    await this.getManifest(true);
+    return true;
+  }
+
   public async getDirectoryListing(directoryPath = ''): Promise<DirectoryListing> {
     const manifest = await this.getManifest();
+    const explorerIndex = this.explorerIndex ?? this.buildExplorerIndex(manifest);
+    if (!this.explorerIndex) {
+      this.explorerIndex = explorerIndex;
+    }
+
     const normalizedPath = this.normalizeDirectoryPath(directoryPath);
-    const isKnownPath = await this.isKnownDirectoryPath(normalizedPath, manifest);
-    const currentPath = isKnownPath ? normalizedPath : '';
-
-    const storageItems = await this.storage.listDirectoryItems(currentPath);
-
-    const manifestFolders = manifest.directories.filter(
-      (folder) => folder.parentPath === currentPath && folder.path !== currentPath,
-    );
-
-    const folders = this.mergeManifestAndStorageFolders(currentPath, manifestFolders, storageItems);
-
-    const entries = this.sortMetadata(
-      manifest.entries.filter((entry) => entry.parentPath === currentPath),
-    );
-
-    const media = this.buildMediaFilesForDirectory(currentPath, storageItems);
+    const currentPath = explorerIndex.knownPaths.has(normalizedPath) ? normalizedPath : '';
 
     return {
       currentPath,
-      folders,
-      entries,
-      media,
+      folders: [...(explorerIndex.foldersByParentPath.get(currentPath) ?? [])],
+      entries: [...(explorerIndex.entriesByParentPath.get(currentPath) ?? [])],
+      media: [...(explorerIndex.mediaByParentPath.get(currentPath) ?? [])],
     };
   }
 
@@ -447,8 +516,8 @@ export class SyncEngine {
     }
 
     if (onProgress) onProgress('Finalizing and encrypting new manifest...');
-    await this.writeManifest(entries);
-    return this.sortMetadata(entries);
+    const manifest = await this.writeManifest(entries);
+    return manifest.entries;
   }
 
   // Encrypt and upload an entry to its correct path
@@ -459,11 +528,7 @@ export class SyncEngine {
     
     await this.storage.uploadFile(path, encrypted);
 
-    const manifest = await this.readManifest();
-    if (!manifest) {
-      await this.rebuildManifest();
-      return path;
-    }
+    const manifest = await this.getManifest();
 
     const updatedEntries = manifest.entries.filter((item) => item.path !== path && item.id !== entry.id);
     updatedEntries.unshift(this.toMetadata(entry, path));
@@ -475,10 +540,7 @@ export class SyncEngine {
   public async deleteEntry(path: string): Promise<void> {
     await this.storage.deleteFile(path);
 
-    const manifest = await this.readManifest();
-    if (!manifest) {
-      return;
-    }
+    const manifest = await this.getManifest();
 
     const updatedEntries = manifest.entries.filter((item) => item.path !== path);
     await this.writeManifest(updatedEntries);

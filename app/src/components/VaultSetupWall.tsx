@@ -1,13 +1,25 @@
 import { useEffect, useState } from 'react';
-import { Button, Center, Card, Title, Text, Stack, Alert, CopyButton, PasswordInput, ScrollArea } from '@mantine/core';
+import { Button, Center, Card, Title, Text, Stack, Alert, CopyButton, PasswordInput, ScrollArea, Textarea, Select, SegmentedControl } from '@mantine/core';
+import { getDeviceAuthContext, type DeviceAuthContext } from '../lib/deviceAuth';
+import type { KeyringWebAuthnSlot } from '../lib/keyring';
 import { GoogleDriveStorage } from '../lib/storage';
+import type { VaultUnlockOutcome } from '../lib/vault';
 import { VaultManager } from '../lib/vault';
 import instructionsText from '../assets/vault-directory-instructions.txt?raw';
 
 interface VaultSetupWallProps {
   storage: GoogleDriveStorage;
-  onVaultReady: (vaultManager: VaultManager) => void;
+  onVaultReady: (vaultManager: VaultManager, unlockOutcome: VaultUnlockOutcome) => void;
   onAuthError: () => void;
+}
+
+function isUnauthorizedError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'UnauthorizedError';
+}
+
+function toErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return 'An unexpected error occurred. Please try again.';
 }
 
 export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetupWallProps) {
@@ -16,55 +28,206 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
   const [error, setError] = useState('');
   const [recoveryKey, setRecoveryKey] = useState('');
   const [vaultManager] = useState(() => new VaultManager(storage));
-  
-  const [usePasswordFallback, setUsePasswordFallback] = useState(false);
-  const [fallbackPassword, setFallbackPassword] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [unlockMode, setUnlockMode] = useState<'password' | 'recovery' | 'webauthn'>('password');
+  const [recoveryKeyInput, setRecoveryKeyInput] = useState('');
+  const [resetPassword, setResetPassword] = useState('');
+  const [confirmResetPassword, setConfirmResetPassword] = useState('');
+  const [requiresPasswordReset, setRequiresPasswordReset] = useState(false);
+  const [pendingRecoveryOutcome, setPendingRecoveryOutcome] = useState<VaultUnlockOutcome | null>(null);
+  const [deviceContext, setDeviceContext] = useState<DeviceAuthContext | null>(null);
+  const [platformWebAuthnAvailable, setPlatformWebAuthnAvailable] = useState(false);
+  const [webauthnSlots, setWebauthnSlots] = useState<KeyringWebAuthnSlot[]>([]);
+  const [selectedWebauthnSlotId, setSelectedWebauthnSlotId] = useState<string | null>(null);
 
   useEffect(() => {
     vaultManager.isVaultInitialized()
       .then(setIsInitialized)
-      .catch((e: any) => {
-        if (e.name === 'UnauthorizedError') {
+      .catch((err: unknown) => {
+        if (isUnauthorizedError(err)) {
           onAuthError();
         } else {
-          setError(e.message);
+          setError(toErrorMessage(err));
         }
       });
   }, [vaultManager, onAuthError]);
 
+  useEffect(() => {
+    if (!isInitialized) {
+      setDeviceContext(null);
+      setPlatformWebAuthnAvailable(false);
+      setWebauthnSlots([]);
+      setSelectedWebauthnSlotId(null);
+      setUnlockMode('password');
+      return;
+    }
+
+    let cancelled = false;
+    const loadUnlockOptions = async () => {
+      try {
+        const context = await getDeviceAuthContext();
+        if (cancelled) return;
+
+        setDeviceContext(context);
+        const options = await vaultManager.getWebAuthnUnlockOptions(context.deviceId);
+        if (cancelled) return;
+
+        setPlatformWebAuthnAvailable(options.platformAvailable);
+        setWebauthnSlots(options.slots);
+        setSelectedWebauthnSlotId(options.recommendedSlotId);
+
+        if (options.platformAvailable && options.recommendedSlotId) {
+          setUnlockMode('webauthn');
+        }
+      } catch {
+        if (cancelled) return;
+        setUnlockMode('password');
+      }
+    };
+
+    void loadUnlockOptions();
+    return () => {
+      cancelled = true;
+    };
+  }, [isInitialized, vaultManager]);
+
   const handleCreateVault = async () => {
-    if (usePasswordFallback && !fallbackPassword) return setError("Please enter a password.");
+    if (!password.trim()) {
+      setError('Please enter a password.');
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setError('Password and confirmation do not match.');
+      return;
+    }
+
     setLoading(true);
     setError('');
     try {
-      const { recoveryKey } = await vaultManager.initializeVault(usePasswordFallback ? fallbackPassword : undefined);
+      const { recoveryKey } = await vaultManager.initializeVault(password);
       setRecoveryKey(recoveryKey);
-    } catch (err: any) {
-      if (err.name === 'UnauthorizedError') {
+    } catch (err: unknown) {
+      if (isUnauthorizedError(err)) {
         onAuthError();
         return;
       }
-      setError(err.message);
-      if (err.message.includes('PRF')) setUsePasswordFallback(true);
+      setError(toErrorMessage(err));
     } finally {
       setLoading(false);
     }
   };
 
   const handleUnlockVault = async () => {
-    if (usePasswordFallback && !fallbackPassword) return setError("Please enter a password.");
+    if (!password.trim()) {
+      setError('Please enter your vault password.');
+      return;
+    }
+
     setLoading(true);
     setError('');
     try {
-      await vaultManager.unlockVault(usePasswordFallback ? fallbackPassword : undefined);
-      onVaultReady(vaultManager);
-    } catch (err: any) {
-      if (err.name === 'UnauthorizedError') {
+      const unlockOutcome = await vaultManager.unlockVault(password);
+      onVaultReady(vaultManager, unlockOutcome);
+    } catch (err: unknown) {
+      if (isUnauthorizedError(err)) {
         onAuthError();
         return;
       }
-      setError(err.message);
-      if (err.message.includes('PRF')) setUsePasswordFallback(true);
+      const message = toErrorMessage(err);
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRecoveryUnlock = async () => {
+    if (!recoveryKeyInput.trim()) {
+      setError('Please paste your recovery key.');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+    try {
+      const unlockOutcome = await vaultManager.unlockVaultWithRecoveryKey(recoveryKeyInput);
+      setRequiresPasswordReset(true);
+      setPendingRecoveryOutcome(unlockOutcome);
+      setPassword('');
+      setConfirmPassword('');
+    } catch (err: unknown) {
+      if (isUnauthorizedError(err)) {
+        onAuthError();
+        return;
+      }
+      setError(toErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResetPasswordAfterRecovery = async () => {
+    if (!resetPassword.trim()) {
+      setError('Please enter a new password.');
+      return;
+    }
+
+    if (resetPassword !== confirmResetPassword) {
+      setError('New password and confirmation do not match.');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+    try {
+      await vaultManager.setNewPasswordAfterRecovery(resetPassword);
+      setRequiresPasswordReset(false);
+      setUnlockMode('password');
+      setRecoveryKeyInput('');
+      setResetPassword('');
+      setConfirmResetPassword('');
+      onVaultReady(
+        vaultManager,
+        pendingRecoveryOutcome ?? {
+          method: 'recovery-key',
+          slotId: null,
+          label: 'Recovery Key',
+        },
+      );
+    } catch (err: unknown) {
+      if (isUnauthorizedError(err)) {
+        onAuthError();
+        return;
+      }
+      setError(toErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleWebAuthnUnlock = async () => {
+    if (!deviceContext) {
+      setError('Could not determine device context for platform authenticator unlock. Please use password or recovery key.');
+      return;
+    }
+
+    if (!selectedWebauthnSlotId) {
+      setError('No platform authenticator is selected for this device.');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+    try {
+      const unlockOutcome = await vaultManager.unlockVaultWithWebAuthn(selectedWebauthnSlotId, deviceContext.deviceId);
+      onVaultReady(vaultManager, unlockOutcome);
+    } catch (err: unknown) {
+      if (isUnauthorizedError(err)) {
+        onAuthError();
+        return;
+      }
+      setError(toErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -86,7 +249,7 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
           <Stack align="stretch" gap="md">
             <Title order={3}>Save Your Recovery Key</Title>
             <Alert color="red" title="Warning">
-              If you lose your WebAuthn authenticator (e.g., your device breaks), this is the ONLY way to recover your data. The application does not store this key anywhere else.
+              If you forget your password, this key lets you unlock your vault and set a new password. The application does not store this key anywhere else.
             </Alert>
             <Text size="sm" style={{ wordBreak: 'break-all', fontFamily: 'monospace', padding: '1rem', background: 'var(--mantine-color-dark-8)', borderRadius: '4px' }}>
               {recoveryKey}
@@ -109,7 +272,12 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
               </pre>
             </ScrollArea>
 
-            <Button onClick={() => onVaultReady(vaultManager)} variant="light" color="gray" mt="md">
+            <Button
+              onClick={() => onVaultReady(vaultManager, { method: 'password', slotId: null, label: 'Password' })}
+              variant="light"
+              color="gray"
+              mt="md"
+            >
               I understand and have saved the key. Proceed.
             </Button>
           </Stack>
@@ -122,45 +290,189 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
     <Center style={{ height: '100vh', backgroundColor: 'var(--mantine-color-body)' }}>
       <Card shadow="xl" p="xl" radius="md" withBorder style={{ maxWidth: 400, width: '100%' }}>
         <Stack align="center" gap="md">
-          <Title order={3}>{isInitialized ? 'Vault Found' : 'Create New Vault'}</Title>
+          <Title order={3}>
+            {!isInitialized
+              ? 'Create New Vault'
+              : requiresPasswordReset
+                ? 'Set a New Vault Password'
+                : unlockMode === 'webauthn'
+                  ? 'Unlock with Device Authenticator'
+                : unlockMode === 'recovery'
+                  ? 'Recover Vault'
+                  : 'Vault Found'}
+          </Title>
           <Text c="dimmed" ta="center" size="sm">
-            {isInitialized 
-              ? 'Your cryptographic vault is stored securely on your Google Drive. We need your authenticator to unlock it.' 
-              : 'It looks like you do not have an encrypted vault here yet. Let\'s create one using your biometric authenticator.'}
+            {!isInitialized
+              ? 'No encrypted vault was found in this Drive space yet. Create a strong password to initialize your vault.'
+              : requiresPasswordReset
+                ? 'Recovery key verified. For security, you must set a new password before continuing.'
+                : unlockMode === 'webauthn'
+                  ? 'Use the registered platform authenticator for this device. You will confirm with a biometric/device prompt after you tap unlock.'
+                : unlockMode === 'recovery'
+                  ? 'Paste your recovery key to unlock this vault and then immediately set a new password.'
+                  : 'Your encrypted vault is stored on Google Drive. Enter your vault password to unlock it.'}
           </Text>
           
           {error && <Alert color="red" w="100%">{error}</Alert>}
 
-          {usePasswordFallback && (
+          {!isInitialized && (
+            <>
+              <PasswordInput
+                label="Create Vault Password"
+                description="Use a strong password. You will need this password to unlock your vault each time."
+                placeholder="Enter password"
+                value={password}
+                onChange={(e) => setPassword(e.currentTarget.value)}
+                required
+                autoFocus
+                w="100%"
+              />
+              <PasswordInput
+                label="Confirm Password"
+                placeholder="Re-enter password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.currentTarget.value)}
+                required
+                w="100%"
+              />
+            </>
+          )}
+
+          {isInitialized && !requiresPasswordReset && unlockMode === 'password' && (
             <PasswordInput
-              label="Fallback Password"
-              description="Your device does not support the WebAuthn PRF extension. Please create a strong password to manually derive your encryption keys."
-              placeholder="Enter a strong password"
-              value={fallbackPassword}
-              onChange={(e) => setFallbackPassword(e.currentTarget.value)}
+              label="Vault Password"
+              description="Use the password you set when this vault was created."
+              placeholder="Enter password"
+              value={password}
+              onChange={(e) => setPassword(e.currentTarget.value)}
               required
               autoFocus
               w="100%"
             />
           )}
 
+          {isInitialized && !requiresPasswordReset && unlockMode === 'recovery' && (
+            <Textarea
+              label="Recovery Key"
+              description="Paste the full recovery key exactly as saved."
+              placeholder="AGE-SECRET-KEY-..."
+              value={recoveryKeyInput}
+              onChange={(e) => setRecoveryKeyInput(e.currentTarget.value)}
+              autosize
+              minRows={3}
+              required
+              autoFocus
+              w="100%"
+            />
+          )}
+
+          {isInitialized && !requiresPasswordReset && unlockMode === 'webauthn' && (
+            <>
+              {webauthnSlots.length > 1 && (
+                <Select
+                  label="Registered Device Authenticator"
+                  description="Choose which registered authenticator to use for unlock."
+                  data={webauthnSlots.map((slot) => ({
+                    value: slot.id,
+                    label: `${slot.label} · last used ${new Date(slot.lastUsedAt).toLocaleDateString()}`,
+                  }))}
+                  value={selectedWebauthnSlotId}
+                  onChange={setSelectedWebauthnSlotId}
+                  w="100%"
+                />
+              )}
+
+              {!platformWebAuthnAvailable && (
+                <Alert color="yellow" w="100%">
+                  Platform authenticator is not available in this browser/device context. Use password or recovery key.
+                </Alert>
+              )}
+
+              {platformWebAuthnAvailable && webauthnSlots.length === 0 && (
+                <Alert color="yellow" w="100%">
+                  No platform authenticator is registered for this vault yet. Unlock with password, then add one in Vault Settings.
+                </Alert>
+              )}
+            </>
+          )}
+
+          {isInitialized && requiresPasswordReset && (
+            <>
+              <PasswordInput
+                label="New Password"
+                placeholder="Enter new password"
+                value={resetPassword}
+                onChange={(e) => setResetPassword(e.currentTarget.value)}
+                required
+                autoFocus
+                w="100%"
+              />
+              <PasswordInput
+                label="Confirm New Password"
+                placeholder="Re-enter new password"
+                value={confirmResetPassword}
+                onChange={(e) => setConfirmResetPassword(e.currentTarget.value)}
+                required
+                w="100%"
+              />
+            </>
+          )}
+
           <Button 
             size="lg" 
             w="100%"
-            onClick={isInitialized ? handleUnlockVault : handleCreateVault} 
+            onClick={
+              !isInitialized
+                ? handleCreateVault
+                : requiresPasswordReset
+                  ? handleResetPasswordAfterRecovery
+                    : unlockMode === 'webauthn'
+                      ? handleWebAuthnUnlock
+                  : unlockMode === 'recovery'
+                    ? handleRecoveryUnlock
+                    : handleUnlockVault
+            }
             loading={loading}
             variant="gradient"
             gradient={{ from: 'indigo', to: 'cyan' }}
           >
-            {isInitialized 
-              ? (usePasswordFallback ? 'Unlock with Password' : 'Unlock Vault') 
-              : (usePasswordFallback ? 'Create Vault with Password' : 'Create Secure Vault')}
+            {!isInitialized
+              ? 'Create Vault'
+              : requiresPasswordReset
+                ? 'Set New Password and Continue'
+                : unlockMode === 'webauthn'
+                  ? 'Unlock with Device Authenticator'
+                : unlockMode === 'recovery'
+                  ? 'Unlock with Recovery Key'
+                  : 'Unlock Vault'}
           </Button>
-          
-          {!usePasswordFallback && (
-            <Button variant="transparent" size="xs" color="gray" onClick={() => setUsePasswordFallback(true)}>
-              Use manual password instead
-            </Button>
+
+          {isInitialized && !requiresPasswordReset && (
+            <SegmentedControl
+              w="100%"
+              size="xs"
+              color="gray"
+              value={unlockMode}
+              onChange={(value) => {
+                setError('');
+                setUnlockMode(value as 'password' | 'recovery' | 'webauthn');
+              }}
+              data={[
+                { label: 'Password', value: 'password' },
+                {
+                  label: 'Device Authenticator',
+                  value: 'webauthn',
+                  disabled: !platformWebAuthnAvailable || webauthnSlots.length === 0,
+                },
+                { label: 'Recovery Key', value: 'recovery' },
+              ]}
+            />
+          )}
+
+          {!isInitialized && (
+            <Text size="xs" c="dimmed" ta="center">
+              If you lose this password, use your saved recovery key on the unlock screen to regain access.
+            </Text>
           )}
         </Stack>
       </Card>

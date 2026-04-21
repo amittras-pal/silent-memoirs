@@ -1,7 +1,7 @@
 # Vault Recovery Upon Password Loss
 
 ## Feature ID: FEAT-0001
-**Status**: Planned  
+**Status**: Completed  
 
 ## Objective
 To provide a secure secondary recovery mechanism (recovery key) for users who created their vault using a password, allowing them to decrypt the vault, reset, or create a new password if their original password is lost.

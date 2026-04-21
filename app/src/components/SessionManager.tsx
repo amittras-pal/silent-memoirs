@@ -1,6 +1,13 @@
 import { Button, Modal, Stack, Text, Title } from '@mantine/core';
 import { IconBrandGoogle } from '@tabler/icons-react';
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  cacheGoogleUserProfile,
+  fetchGoogleUserProfile,
+  GOOGLE_OAUTH_SCOPE,
+  GOOGLE_TOKEN_ISSUED_EVENT,
+  notifyGoogleTokenIssued,
+} from '../lib/googleAuth';
 
 declare global {
   interface Window {
@@ -49,9 +56,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
         const client = window.google.accounts.oauth2.initTokenClient({
           client_id: getClientId(),
-          scope: 'https://www.googleapis.com/auth/drive.file',
+          scope: GOOGLE_OAUTH_SCOPE,
           prompt: silent ? '' : 'consent', 
-          callback: (tokenResponse: any) => {
+          callback: async (tokenResponse: any) => {
             if (tokenResponse.error) {
               reject(new Error(tokenResponse.error));
               return;
@@ -61,6 +68,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
               localStorage.setItem('google_access_token', tokenResponse.access_token);
               localStorage.setItem('token_issued_at', now.toString());
               setTokenIssuedAt(now);
+
+              notifyGoogleTokenIssued(now);
+              try {
+                const profile = await fetchGoogleUserProfile(tokenResponse.access_token);
+                cacheGoogleUserProfile(profile);
+              } catch (error) {
+                console.warn('Unable to refresh Google user profile.', error);
+              }
+
               resolve(tokenResponse.access_token);
             } else {
               reject(new Error("No access token returned"));
@@ -148,8 +164,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setTokenIssuedAt(null);
       }
     };
+
+    const handleTokenIssued = (e: Event) => {
+      const customEvent = e as CustomEvent<number>;
+      if (typeof customEvent.detail === 'number') {
+        setTokenIssuedAt(customEvent.detail);
+      }
+    };
+
     window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
+    window.addEventListener(GOOGLE_TOKEN_ISSUED_EVENT, handleTokenIssued as EventListener);
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener(GOOGLE_TOKEN_ISSUED_EVENT, handleTokenIssued as EventListener);
+    };
   }, []);
 
   return (
