@@ -1,7 +1,7 @@
 # Markdown Component Overrides
 
 ## Feature ID: FEAT-0007
-**Status**: Planned  
+**Status**: Completed  
 
 ## Objective
 Replace markdown rendering for blockquote and table nodes with Mantine-native components so both viewer and preview use a consistent, theme-aware UI that matches the rest of the app.
@@ -55,11 +55,11 @@ Replace markdown rendering for blockquote and table nodes with Mantine-native co
 - Validate in both color schemes and on mobile width.
 
 ## Acceptance Criteria
-- [ ] Blockquote markdown renders using Mantine `Blockquote` in editor preview and viewer.
-- [ ] Table markdown renders using Mantine `Table` with responsive horizontal scrolling.
-- [ ] Existing encrypted image rendering is unaffected.
-- [ ] No markdown content is dropped or altered while rendering.
-- [ ] Visual output is consistent between editor preview and viewer.
+- [x] Blockquote markdown renders using Mantine `Blockquote` in editor preview and viewer.
+- [x] Table markdown renders using Mantine `Table` with responsive horizontal scrolling.
+- [x] Existing encrypted image rendering is unaffected.
+- [x] No markdown content is dropped or altered while rendering.
+- [x] Visual output is consistent between editor preview and viewer.
 
 ## Dependencies & Considerations
 - Uses existing Mantine dependency already present in [app/package.json](app/package.json); no new package required.
