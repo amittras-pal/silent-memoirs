@@ -1,0 +1,24 @@
+.md-editor-preview {
+    font-family: "Crimson Pro", serif;
+    font-weight: 400;
+    font-size: 16px;
+    line-height: 1.5;
+}
+
+.md-editor-preview code.code-highlight {
+    font-family: "Fira Code", monospace;
+    font-weight: 400;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.md-editor-preview h1,
+.md-editor-preview h2,
+.md-editor-preview h3,
+.md-editor-preview h4,
+.md-editor-preview h5,
+.md-editor-preview h6 {
+    font-family: "Raleway", sans-serif;
+    font-weight: 600;
+    line-height: 1.5;
+}

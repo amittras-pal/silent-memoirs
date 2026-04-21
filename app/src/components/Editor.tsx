@@ -1,4 +1,4 @@
-import { ActionIcon, Alert, Box, Divider, Flex, Group, Menu, Switch, Text, Tooltip, useMantineColorScheme } from '@mantine/core';
+import { ActionIcon, Alert, Box, Divider, Flex, Group, Menu, Switch, Tooltip, useMantineColorScheme } from '@mantine/core';
 import {
   IconAlertCircle,
   IconBold,
@@ -9,6 +9,7 @@ import {
   IconH4,
   IconHeading,
   IconItalic,
+  IconLetterCase,
   IconLink,
   IconList,
   IconListNumbers,
@@ -21,8 +22,10 @@ import {
   IconTable
 } from '@tabler/icons-react';
 import MDEditor, { commands, getCommands, handleKeyDown, shortcuts, TextAreaCommandOrchestrator } from '@uiw/react-md-editor';
+import { notifications } from '@mantine/notifications';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { AgeIdentity } from '../lib/crypto';
+import { createMarkdownComponents } from '../lib/markdownComponents';
 import { getRandomEditorPlaceholder, getWordCount } from '../lib/editorUtils';
 import {
   createPendingMediaPath,
@@ -33,10 +36,10 @@ import {
   resolveSupportedImageExtension,
   type PixelCrop,
 } from '../lib/media';
-import type { StorageProvider } from '../lib/storage';
 import { stageMedia } from '../lib/stagedMedia';
-import { EncryptedMediaImage } from './EncryptedMediaImage';
+import type { StorageProvider } from '../lib/storage';
 import { ImageCropModal } from './ImageCropModal';
+import "./Editor.css";
 
 interface EditorProps {
   value: string;
@@ -46,9 +49,7 @@ interface EditorProps {
   entryKey: string;
 }
 
-type MarkdownImageProps = React.ImgHTMLAttributes<HTMLImageElement> & {
-  node?: unknown;
-};
+
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) {
@@ -83,16 +84,10 @@ export function Editor({ value, onChange, storage, vaultIdentity, entryKey }: Ed
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [imageError, setImageError] = useState<string | null>(null);
 
-  const markdownComponents = useMemo(() => ({
-    img: ({ node: _node, ...props }: MarkdownImageProps) => (
-      <EncryptedMediaImage
-        {...props}
-        storage={storage}
-        secretKey={vaultIdentity.secretKey}
-        allowPendingResolution
-      />
-    ),
-  }), [storage, vaultIdentity.secretKey]);
+  const markdownComponents = useMemo(
+    () => createMarkdownComponents(storage, vaultIdentity.secretKey, true),
+    [storage, vaultIdentity.secretKey]
+  );
 
   // Sync when parent dynamically overrides value (e.g. async fetch from disk)
   useEffect(() => {
@@ -130,7 +125,7 @@ export function Editor({ value, onChange, storage, vaultIdentity, entryKey }: Ed
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     handleKeyDown(e, 2, false);
-    if(orchestratorRef.current)
+    if (orchestratorRef.current)
       shortcuts(e, getCommands(), orchestratorRef.current);
   };
 
@@ -301,7 +296,7 @@ export function Editor({ value, onChange, storage, vaultIdentity, entryKey }: Ed
             {toolbarButton(<IconBold size={18} stroke={1.5} />, 'Bold', commands.bold)}
             {toolbarButton(<IconItalic size={18} stroke={1.5} />, 'Italic', commands.italic)}
             {toolbarButton(<IconStrikethrough size={18} stroke={1.5} />, 'Strikethrough', commands.strikethrough)}
-            
+
             <Menu shadow="md" width={150} withinPortal >
               <Menu.Target>
                 <Tooltip label="Headings" withArrow position="bottom" openDelay={300}>
@@ -354,8 +349,23 @@ export function Editor({ value, onChange, storage, vaultIdentity, entryKey }: Ed
                 {isFullscreen ? <IconMinimize size={18} stroke={1.5} /> : <IconMaximize size={18} stroke={1.5} />}
               </ActionIcon>
             </Tooltip>
-            <Divider orientation='vertical' mx="xs" />
-            <Text size='xs' c="dimmed">{getWordCount(localValue)} words</Text>
+            <Tooltip label="Word Count" withArrow position="bottom" openDelay={300}>
+              <ActionIcon
+                variant="subtle"
+                color="gray"
+                onClick={() =>
+                  notifications.show({
+                    title: 'Word Count',
+                    message: `${getWordCount(localValue)} words`,
+                    color: 'indigo',
+                    icon: <IconLetterCase size={18} stroke={1.5} />,
+                    autoClose: 3000,
+                  })
+                }
+              >
+                <IconLetterCase size={18} stroke={1.5} />
+              </ActionIcon>
+            </Tooltip>
           </Group>
         </Group>
 
@@ -382,10 +392,12 @@ export function Editor({ value, onChange, storage, vaultIdentity, entryKey }: Ed
                 border: 'none',
                 outline: 'none',
                 padding: '1rem',
+                paddingBottom: "12rem",
                 backgroundColor: 'transparent',
                 color: 'inherit',
-                fontFamily: 'monospace',
+                fontFamily: '"Fira Code", monospace',
                 fontSize: '14px',
+                fontWeight: 400,
                 lineHeight: 1.5,
               }}
               placeholder={editorPlaceholder}
@@ -398,18 +410,18 @@ export function Editor({ value, onChange, storage, vaultIdentity, entryKey }: Ed
             style={{
               flex: 1,
               height: '100%',
+              maxHeight: "calc(100vh - 196px)",
               overflowY: 'auto',
               padding: '1rem',
-              backgroundColor: 'var(--mantine-color-body)'
+              backgroundColor: 'var(--mantine-color-body)',
             }}
           >
-            <div className="wmde-markdown" style={{ backgroundColor: 'transparent' }}>
-              <MDEditor.Markdown
-                source={localValue}
-                style={{ backgroundColor: 'transparent' }}
-                components={markdownComponents}
-              />
-            </div>
+            <MDEditor.Markdown
+              className='md-editor-preview'
+              source={localValue}
+              style={{ backgroundColor: 'transparent' }}
+              components={markdownComponents}
+            />
           </Box>
         )}
       </Flex>

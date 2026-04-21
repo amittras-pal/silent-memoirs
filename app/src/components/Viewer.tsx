@@ -3,8 +3,9 @@ import { IconMaximize, IconMinimize } from '@tabler/icons-react';
 import MDEditor from '@uiw/react-md-editor';
 import { useMemo, useState } from 'react';
 import { resolveEntryTitle } from '../lib/entryTitle';
+import { createMarkdownComponents } from '../lib/markdownComponents';
 import type { StorageProvider } from '../lib/storage';
-import { EncryptedMediaImage } from './EncryptedMediaImage';
+import "./Viewer.css";
 
 interface ViewerProps {
   title: string;
@@ -14,23 +15,16 @@ interface ViewerProps {
   secretKey: string;
 }
 
-type MarkdownImageProps = React.ImgHTMLAttributes<HTMLImageElement> & {
-  node?: unknown;
-};
+
 
 export function Viewer({ title, content, date, storage, secretKey }: ViewerProps) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const { colorScheme } = useMantineColorScheme();
 
-  const markdownComponents = useMemo(() => ({
-    img: ({ node: _node, ...props }: MarkdownImageProps) => (
-      <EncryptedMediaImage
-        {...props}
-        storage={storage}
-        secretKey={secretKey}
-      />
-    ),
-  }), [secretKey, storage]);
+  const markdownComponents = useMemo(
+    () => createMarkdownComponents(storage, secretKey),
+    [storage, secretKey]
+  );
 
   return (
     <Box
@@ -70,13 +64,12 @@ export function Viewer({ title, content, date, storage, secretKey }: ViewerProps
       </Box>
 
       <Box style={{ flex: 1, overflowY: 'auto', padding: '1rem', backgroundColor: 'var(--mantine-color-body)' }}>
-        <div className="wmde-markdown" style={{ backgroundColor: 'transparent' }}>
-          <MDEditor.Markdown
-            source={content || '_No content yet._'}
-            style={{ backgroundColor: 'transparent' }}
-            components={markdownComponents}
-          />
-        </div>
+        <MDEditor.Markdown
+          className='md-viewer'
+          source={content || '_No content yet._'}
+          style={{ backgroundColor: 'transparent' }}
+          components={markdownComponents}
+        />
       </Box>
     </Box>
   );
