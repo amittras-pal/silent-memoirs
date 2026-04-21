@@ -4,7 +4,7 @@ import '@mantine/core/styles.css';
 import '@mantine/notifications/styles.css';
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
-import { BrowserRouter } from 'react-router-dom';
+import { HashRouter } from 'react-router-dom';
 import App from './App.tsx'
 import { SessionProvider } from './components/SessionManager';
 import { AppProvider } from './contexts/AppContext';
@@ -13,13 +13,13 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <MantineProvider defaultColorScheme="dark">
       <Notifications position="bottom-right" zIndex={9999} />
-      <BrowserRouter>
+      <HashRouter>
         <SessionProvider>
           <AppProvider>
             <App />
           </AppProvider>
         </SessionProvider>
-      </BrowserRouter>
+      </HashRouter>
     </MantineProvider>
   </StrictMode>,
 )
