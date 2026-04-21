@@ -12,7 +12,7 @@ import { AppProvider } from './contexts/AppContext';
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <MantineProvider defaultColorScheme="dark">
-      <Notifications position="bottom-right" />
+      <Notifications position="bottom-right" zIndex={9999} />
       <BrowserRouter>
         <SessionProvider>
           <AppProvider>
