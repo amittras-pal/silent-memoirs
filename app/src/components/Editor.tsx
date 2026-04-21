@@ -37,6 +37,7 @@ import type { StorageProvider } from '../lib/storage';
 import { stageMedia } from '../lib/stagedMedia';
 import { EncryptedMediaImage } from './EncryptedMediaImage';
 import { ImageCropModal } from './ImageCropModal';
+import "./Editor.css";
 
 interface EditorProps {
   value: string;
@@ -403,13 +404,12 @@ export function Editor({ value, onChange, storage, vaultIdentity, entryKey }: Ed
               backgroundColor: 'var(--mantine-color-body)'
             }}
           >
-            <div className="wmde-markdown" style={{ backgroundColor: 'transparent' }}>
               <MDEditor.Markdown
+className='md-editor-preview'
                 source={localValue}
                 style={{ backgroundColor: 'transparent' }}
                 components={markdownComponents}
               />
-            </div>
           </Box>
         )}
       </Flex>

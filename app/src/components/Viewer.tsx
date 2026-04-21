@@ -4,7 +4,7 @@ import MDEditor from '@uiw/react-md-editor';
 import { useMemo, useState } from 'react';
 import { resolveEntryTitle } from '../lib/entryTitle';
 import type { StorageProvider } from '../lib/storage';
-import { EncryptedMediaImage } from './EncryptedMediaImage';
+import "./Viewer.css";
 
 interface ViewerProps {
   title: string;
@@ -70,13 +70,12 @@ export function Viewer({ title, content, date, storage, secretKey }: ViewerProps
       </Box>
 
       <Box style={{ flex: 1, overflowY: 'auto', padding: '1rem', backgroundColor: 'var(--mantine-color-body)' }}>
-        <div className="wmde-markdown" style={{ backgroundColor: 'transparent' }}>
           <MDEditor.Markdown
+          className='md-viewer'
             source={content || '_No content yet._'}
             style={{ backgroundColor: 'transparent' }}
             components={markdownComponents}
           />
-        </div>
       </Box>
     </Box>
   );
