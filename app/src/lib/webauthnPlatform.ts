@@ -9,10 +9,26 @@ const PRF_SALT = new Uint8Array([
 
 interface PrfClientExtensionResults {
   prf?: {
+    enabled?: boolean;
     results?: {
-      first?: ArrayBuffer;
+      first?: unknown;
     };
   };
+}
+
+function normalizeBufferSource(value: unknown): ArrayBuffer | null {
+  if (value instanceof ArrayBuffer) {
+    return value;
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    const view = value;
+    const normalized = new Uint8Array(view.byteLength);
+    normalized.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+    return normalized.buffer;
+  }
+
+  return null;
 }
 
 function toBase64Url(bytes: Uint8Array): string {
@@ -61,13 +77,22 @@ export async function isPlatformWebAuthnAvailable(): Promise<boolean> {
   }
 }
 
-function readPrfOutput(credential: PublicKeyCredential): string {
+function readPrfOutput(credential: PublicKeyCredential): string | null {
   const extensionResults = credential.getClientExtensionResults() as PrfClientExtensionResults;
-  const prfOutput = extensionResults.prf?.results?.first;
-  if (!(prfOutput instanceof ArrayBuffer)) {
-    throw new Error('Authenticator did not provide PRF output.');
+  const prfOutput = normalizeBufferSource(extensionResults.prf?.results?.first);
+  if (!prfOutput) {
+    return null;
   }
+
   return bufferToHex(prfOutput);
+}
+
+function readPrfEnabledFlag(credential: PublicKeyCredential): boolean | null {
+  const extensionResults = credential.getClientExtensionResults() as PrfClientExtensionResults;
+  if (typeof extensionResults.prf?.enabled === 'boolean') {
+    return extensionResults.prf.enabled;
+  }
+  return null;
 }
 
 export async function registerPlatformCredentialWithPrf(rpName: string): Promise<{ credentialId: string; prfKeyHex: string }> {
@@ -103,9 +128,28 @@ export async function registerPlatformCredentialWithPrf(rpName: string): Promise
     throw new Error('Platform authenticator registration failed or was cancelled.');
   }
 
+  const credentialId = toBase64Url(new Uint8Array(credential.rawId));
+
+  const createTimePrfKeyHex = readPrfOutput(credential);
+  if (createTimePrfKeyHex) {
+    return {
+      credentialId,
+      prfKeyHex: createTimePrfKeyHex,
+    };
+  }
+
+  const prfEnabled = readPrfEnabledFlag(credential);
+  if (prfEnabled === false) {
+    throw new Error('Authenticator does not support the PRF extension required for encrypted vault unlock.');
+  }
+
+  // Many platform authenticators (especially on Android) report PRF support
+  // at registration but only return PRF outputs during assertion.
+  const assertionPrfKeyHex = await authenticatePlatformCredentialWithPrf(credentialId);
+
   return {
-    credentialId: toBase64Url(new Uint8Array(credential.rawId)),
-    prfKeyHex: readPrfOutput(credential),
+    credentialId,
+    prfKeyHex: assertionPrfKeyHex,
   };
 }
 
@@ -113,7 +157,13 @@ export async function authenticatePlatformCredentialWithPrf(credentialId: string
   await ensureWebAuthnContext();
 
   const challenge = crypto.getRandomValues(new Uint8Array(32));
-  const extensions = { prf: { eval: { first: PRF_SALT } } } as unknown as AuthenticationExtensionsClientInputs;
+  const extensions = {
+    prf: {
+      evalByCredential: {
+        [credentialId]: { first: PRF_SALT },
+      },
+    },
+  } as unknown as AuthenticationExtensionsClientInputs;
 
   const assertion = await navigator.credentials.get({
     publicKey: {
@@ -134,5 +184,10 @@ export async function authenticatePlatformCredentialWithPrf(credentialId: string
     throw new Error('Platform authenticator authentication failed or was cancelled.');
   }
 
-  return readPrfOutput(assertion);
+  const prfKeyHex = readPrfOutput(assertion);
+  if (!prfKeyHex) {
+    throw new Error('Authenticator did not provide PRF output during assertion.');
+  }
+
+  return prfKeyHex;
 }
