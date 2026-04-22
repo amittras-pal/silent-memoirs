@@ -95,6 +95,16 @@ function readPrfEnabledFlag(credential: PublicKeyCredential): boolean | null {
   return null;
 }
 
+function describePrfExtensionState(credential: PublicKeyCredential): string {
+  const extensionResults = credential.getClientExtensionResults() as PrfClientExtensionResults;
+  const hasPrf = typeof extensionResults.prf !== 'undefined';
+  const enabled = typeof extensionResults.prf?.enabled === 'boolean' ? extensionResults.prf.enabled : null;
+  const hasResults = typeof extensionResults.prf?.results !== 'undefined';
+  const hasFirst = !!normalizeBufferSource(extensionResults.prf?.results?.first);
+
+  return `hasPrf=${hasPrf}, enabled=${String(enabled)}, hasResults=${hasResults}, hasFirst=${hasFirst}`;
+}
+
 export async function registerPlatformCredentialWithPrf(rpName: string): Promise<{ credentialId: string; prfKeyHex: string }> {
   await ensureWebAuthnContext();
 
@@ -159,9 +169,7 @@ export async function authenticatePlatformCredentialWithPrf(credentialId: string
   const challenge = crypto.getRandomValues(new Uint8Array(32));
   const extensions = {
     prf: {
-      evalByCredential: {
-        [credentialId]: { first: PRF_SALT },
-      },
+      eval: { first: PRF_SALT },
     },
   } as unknown as AuthenticationExtensionsClientInputs;
 
@@ -186,7 +194,10 @@ export async function authenticatePlatformCredentialWithPrf(credentialId: string
 
   const prfKeyHex = readPrfOutput(assertion);
   if (!prfKeyHex) {
-    throw new Error('Authenticator did not provide PRF output during assertion.');
+    const details = describePrfExtensionState(assertion);
+    throw new Error(
+      `Authenticator did not provide PRF output during assertion. Device/browser likely lacks PRF assertion support (${details}).`
+    );
   }
 
   return prfKeyHex;
