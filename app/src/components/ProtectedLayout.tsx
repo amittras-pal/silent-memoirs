@@ -1,6 +1,6 @@
 import {
-  Avatar,
   AppShell,
+  Avatar,
   Burger,
   Button,
   Center,
@@ -21,6 +21,7 @@ import {
   IconLock,
   IconLogout,
   IconMoon,
+  IconPencilPlus,
   IconPlus,
   IconSettings,
   IconSun,
@@ -30,18 +31,18 @@ import { Suspense, useEffect, useMemo } from 'react';
 import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 
 import { useAppContext } from '../contexts/AppContext';
-import { ROUTES, buildEditorRoute } from '../lib/routes';
+import { ROUTES } from '../lib/routes';
 import { SessionTimerWidget } from './SessionTimerWidget';
 
 export function ProtectedLayout() {
-  const { 
-    storage, 
-    vaultManager, 
-    syncEngine, 
-    isDirty, 
-    isSaving, 
-    activeEntryPath, 
-    handleLogout, 
+  const {
+    storage,
+    vaultManager,
+    syncEngine,
+    isDirty,
+    isSaving,
+    activeEntryPath,
+    handleLogout,
     performVaultLock,
     confirmDiscardChanges,
     discardStagedForEntry,
@@ -186,7 +187,7 @@ export function ProtectedLayout() {
               // BUT it's safer to confirm here just in case. 
               // We'll pass state={action: 'new_entry'} to let Editor know we want a new draft regardless.
               if (!confirmDiscardChanges('You have unsaved changes. Are you sure you want to start a new entry?')) return;
-              
+
               void discardStagedForEntry(activeEntryPath);
               navigate(ROUTES.editor, { state: { forceNew: true } });
               close();
@@ -195,37 +196,28 @@ export function ProtectedLayout() {
           >
             New Entry
           </Button>
-
           <NavLink
             label="Editor"
             leftSection={<IconEdit size={16} stroke={1.5} />}
-            style={{borderRadius: "0.5rem"}}
+            rightSection={isDirty && activeSegment !== 'editor' ? <IconPencilPlus size={16} style={{ opacity: 0.6 }} /> : null}
+            style={{ borderRadius: "0.5rem" }}
             active={activeSegment === 'editor'}
             mb="xs"
             onClick={() => {
-              if (activeSegment !== 'editor' && activeEntryPath) {
-                navigate(buildEditorRoute(activeEntryPath));
-                close();
-                return;
-              }
-              
               if (activeSegment !== 'editor') {
-                 navigate(ROUTES.editor);
-                 close();
+                navigate(ROUTES.editor);
+                close();
               }
             }}
           />
           <NavLink
             label="All Entries"
             leftSection={<IconFolder size={16} stroke={1.5} />}
-            style={{borderRadius: "0.5rem"}}
+            style={{ borderRadius: "0.5rem" }}
             active={activeSegment === 'entries'}
             mb="xs"
-            onClick={async () => {
-              if (!confirmDiscardChanges('You have unsaved changes. Continue to entries anyway?')) return;
-              await discardStagedForEntry(activeEntryPath);
-              // Since currentDirectoryPath is encapsulated in Entries module, we just route to `/entries` 
-              // and let the module load its last visited or root automatically.
+            onClick={() => {
+              // Draft is preserved in context — no discard warning needed for navigation.
               navigate(ROUTES.entries);
               close();
             }}
@@ -234,18 +226,16 @@ export function ProtectedLayout() {
           <NavLink
             label="Vault Settings"
             leftSection={<IconSettings size={16} stroke={1.5} />}
-            style={{borderRadius: "0.5rem"}}
+            style={{ borderRadius: "0.5rem" }}
             active={activeSegment === 'settings'}
             mb="md"
-            onClick={async () => {
-              if (!confirmDiscardChanges('You have unsaved changes. Continue to settings anyway?')) return;
-              await discardStagedForEntry(activeEntryPath);
+            onClick={() => {
+              // Draft is preserved in context — no discard warning needed for navigation.
               navigate(ROUTES.settings);
               close();
             }}
           />
         </div>
-        <div style={{ paddingTop: 'var(--mantine-spacing-sm)', borderTop: '1px solid var(--mantine-color-default-border)' }} />
       </AppShell.Navbar>
 
       <AppShell.Main bg="var(--mantine-color-body)">

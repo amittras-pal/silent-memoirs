@@ -25,10 +25,6 @@ export function decodeEntryPath(value: string | null): string | null {
   }
 }
 
-export function buildEditorRoute(path?: string | null): string {
-  if (!path) return ROUTES.editor;
-  return `${ROUTES.editor}?e=${encodeEntryPath(path)}`;
-}
 
 export function buildViewerRoute(path: string): string {
   return `${ROUTES.viewer}?e=${encodeEntryPath(path)}`;
