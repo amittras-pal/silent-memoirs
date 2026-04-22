@@ -16,7 +16,7 @@ import {
   extractPendingMediaIds,
   replacePendingMediaPaths
 } from '../../lib/media';
-import { ROUTES, buildEditorRoute, buildEntriesRoute, buildViewerRoute, decodeEntryPath } from '../../lib/routes';
+import { ROUTES } from '../../lib/routes';
 import {
   deleteStagedMediaForEntry,
   deleteUnreferencedStagedMediaForEntry,
@@ -28,13 +28,6 @@ import { SyncEngine } from '../../lib/sync';
 
 function composeEditorDate(date: Date): string {
   return dayjs(date).format('YYYY-MM-DD_HH-mm');
-}
-
-function getParentDirectory(path: string | null): string {
-  if (!path) return '';
-  const segments = path.split('/').filter(Boolean);
-  if (segments.length <= 1) return '';
-  return segments.slice(0, -1).join('/');
 }
 
 export default function EditorModule() {
@@ -68,9 +61,6 @@ export default function EditorModule() {
 
   const navigate = useNavigate();
   const location = useLocation();
-
-  const routeQuery = useMemo(() => new URLSearchParams(location.search), [location.search]);
-  const routeEntryPath = useMemo(() => decodeEntryPath(routeQuery.get('e')), [routeQuery]);
   const forceNew = location.state?.forceNew;
 
   const editorDateValue = useMemo(() => parseEntryDate(editorDate), [editorDate]);
@@ -121,41 +111,18 @@ export default function EditorModule() {
     }
   }, [forceNew, navigate, startDraftForDate]);
 
-  // Route -> State reconciliation
+  // State initialisation: start a new draft if there is nothing active to edit.
   useEffect(() => {
     if (!syncEngine || forceNew) return;
-
-    if (!routeEntryPath) {
-      if (activeEntryPath && (isDraftMode || activeEntryPath === sessionEditableEntryPath)) {
-        return; // we are already editing something valid
-      }
-      if (!isDraftMode) {
-        startDraftForDate(new Date());
-      }
-      return;
+    if (activeEntryPath && (isDraftMode || activeEntryPath === sessionEditableEntryPath)) {
+      return; // already editing something valid
     }
-
-    if (routeEntryPath === activeEntryPath) {
-       // Normal case. We're where we want to be.
-       return;
+    if (!isDraftMode) {
+      startDraftForDate(new Date());
     }
-
-    // Attempting to edit an entry by URL. Editor is strictly for drafts or recently saved `sessionEditableEntryPath`.
-    // If the path isn't our currently active editable entry, we must kick the user to viewer.
-    // Why? Saved entries are read-only.
-    navigate(buildViewerRoute(routeEntryPath), { replace: true });
   }, [
-    routeEntryPath, activeEntryPath, syncEngine, isDraftMode, sessionEditableEntryPath, forceNew, navigate, startDraftForDate
+    syncEngine, forceNew, activeEntryPath, isDraftMode, sessionEditableEntryPath, startDraftForDate
   ]);
-
-  // Leave session editing privileges when unmounting editor completely
-  useEffect(() => {
-    return () => {
-      // NOTE: This cleanup cannot directly clear sessionEditableEntryPath if we just switch routes,
-      // because React router unmount cleanup happens. We just rely on navigation to viewer for saved items.
-      // Wait, actually, let's keep sessionEditableEntryPath until explicitly cleared by changing entries.
-    };
-  }, []);
 
   const handleCloseEntry = async () => {
     if (!confirmDiscardChanges('You have unsaved changes. Are you sure you want to close this entry?')) {
@@ -163,9 +130,7 @@ export default function EditorModule() {
     }
 
     await discardStagedForEntry(activeEntryPath);
-    const nextDirectory = getParentDirectory(activeEntryPath);
     resetEditorState();
-    navigate(buildEntriesRoute(nextDirectory));
   };
 
   const handleSave = async () => {
@@ -243,8 +208,6 @@ export default function EditorModule() {
       setInitialEditorTitle(journalEntry.title);
       setInitialEditorContent(finalContent);
       setInitialEditorDate(resolvedDate);
-
-      navigate(buildEditorRoute(newPath), { replace: true });
     } catch (e) {
       if (e instanceof UnauthorizedError) {
         handleAuthFailure(e);

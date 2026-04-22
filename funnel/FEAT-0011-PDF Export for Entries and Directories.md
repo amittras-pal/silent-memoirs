@@ -57,6 +57,28 @@ Allow users to export either a single entry or an entire directory of entries in
   - Draw table rows/cells with fallback wrapping for long content.
 - Keep visual fidelity reasonable but prioritize complete data export and deterministic output.
 
+#### 3a. Typography
+- Both **Raleway** and **Crimson Pro** are already imported from `fonts.googleapis.com` in `app/index.html` and can be reused for PDF embedding. No additional font loading setup is required.
+- Font assignment rules:
+  - **Raleway**: used for the title page title and year, entry title, entry timestamp.
+  - **Crimson Pro**: used for all entry body/content text.
+- Apply consistent font sizing and weight hierarchy (e.g. title > subtitle > body) — exact values to be decided during implementation.
+
+#### 3b. Content Element Styling
+- **Images**:
+  - Centered horizontally on the page.
+  - Maximum width capped at 50% of the page width.
+- **Blockquotes**:
+  - Must be visually prominent — use a distinct left border (thick, colored) and a light background tint to make them stand out clearly on the page.
+- **Tables**:
+  - Style table borders and header rows for readability.
+  - No special page-fitting logic required for v1; tables are sparsely used and overflow behavior is acceptable for now. However, shorter tables like 2-4 columns should fit naturally to the page width. Tables in general should occupy full width of the page. 
+
+#### 3c. Page Setup
+- Page margins should be narrow (1cm on all sides)
+- Page size is A4
+- We don't need page numbers.
+
 ### 4. Download, Decrypt, and Encode Pipeline in Worker
 - Perform Google Drive file fetch/download inside worker where possible:
   - Use worker `fetch()` with OAuth bearer token passed from main thread at job start.
@@ -91,15 +113,28 @@ Allow users to export either a single entry or an entire directory of entries in
 - File naming:
   - Input path example: `2026/2026-04-15_09-30.age`.
   - Output filename: `2026-04-15_09-30.pdf`.
+- The single entry export **includes a title page** containing:
+  - Entry title.
+  - Entry timestamp (date and time).
+  - User's display name (from already-loaded Google profile).
+  - No profile picture on the single entry title page.
+- Typography, image sizing, blockquote styling, and table styling follow the same rules defined in **§3a** and **§3b** above.
 
 ### 8. Directory Export Flow
-- Add directory export action in entries view (recommended in [app/src/components/EntriesList.tsx](app/src/components/EntriesList.tsx)).
+- Export button placement:
+  - Available in the **folders list view** (alongside each year/directory entry).
+  - Also available at the **top of the year view** (the entries listing screen), so the user can trigger it while browsing entries within a directory.
 - Use current directory entry metadata from listing and fetch each full entry via `SyncEngine.fetchEntry(...)`.
+- The directory export represents the full journal of a year and **must include a title page** as the first page:
+  - Title line: `"<User_name>'s Journal"` — user's display name fetched from the already-loaded Google profile.
+  - Second line: the year being exported. Smaller font-size.
+  - If available, the user's Google profile picture should be included on the title page.
+  - Profile name and picture are already available from the existing Google auth profile data; no additional fetch is required.
 - Build one PDF document where each entry starts on a new page:
-  - Title at top with highlighted style.
-  - Subtitle line with date/time directly below.
-  - Markdown content after subtitle.
-- Preserve current entry ordering shown in UI unless product decision says otherwise.
+  - Entry title at top.
+  - Second line: entry date and time (formatted timestamp).
+  - Markdown content after the timestamp.
+- Entries should be ordered oldest to newest. Starting at January and ending at December. 
 
 ### 9. Background Job UX and Progress
 - Add export job state in app shell (recommended in [app/src/App.tsx](app/src/App.tsx)):
@@ -136,8 +171,16 @@ Allow users to export either a single entry or an entire directory of entries in
 ## Acceptance Criteria
 - [ ] Viewer can export current entry to a PDF file with matching base filename.
 - [ ] Entries list can export current directory entries into one combined PDF.
+- [ ] Directory export button is accessible from both the folders list and the top of the year/entries listing view.
 - [ ] Exported PDFs contain decrypted text content and embedded images where available.
-- [ ] Directory export starts each entry on a new page with highlighted title and date/time subtitle.
+- [ ] Directory export includes a title page with user's name, profile picture (if available), and the year.
+- [ ] Single entry export includes a title page with entry title, timestamp, and user's display name.
+- [ ] Directory export starts each entry on a new page with entry title and date/time on second line.
+- [ ] Raleway font is used for title page content, entry titles, and entry timestamps.
+- [ ] Crimson Pro font is used for all entry body content.
+- [ ] Images in exported PDFs are centered and capped at 50% page width.
+- [ ] Blockquotes are rendered with a prominent visual treatment (border + background tint).
+- [ ] Tables are styled with visible borders and header row differentiation.
 - [ ] User sees mandatory pre-export warning about unencrypted output.
 - [ ] While export runs, a non-dismissible progress indicator is visible and app remains usable.
 - [ ] Download/decrypt/render/encode heavy work runs in a dedicated worker in supported browsers.

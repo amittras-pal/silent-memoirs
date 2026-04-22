@@ -14,7 +14,7 @@ import {
   clearMediaImageCache,
   clearMediaUploadPathCursor
 } from '../lib/media';
-import { ROUTES, buildEditorRoute, buildViewerRoute } from '../lib/routes';
+import { ROUTES, buildViewerRoute } from '../lib/routes';
 import {
   clearAllStagedMedia,
   deleteUploadedStagedMediaForEntry
@@ -324,8 +324,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [performVaultLock, syncEngine, vaultManager]);
 
   const getResumeRoute = useCallback(() => {
-    if (activeEntryPath) {
-      return isDraftMode ? buildEditorRoute(activeEntryPath) : buildViewerRoute(activeEntryPath);
+    if (activeEntryPath && !isDraftMode) {
+      return buildViewerRoute(activeEntryPath);
     }
     return ROUTES.editor;
   }, [activeEntryPath, isDraftMode]);
