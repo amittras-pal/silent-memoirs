@@ -30,6 +30,9 @@ import {
 import { Suspense, useEffect, useMemo } from 'react';
 import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 
+import logoDark from '../assets/logo-dark.svg';
+import logoLight from '../assets/logo-light.svg';
+
 import { useAppContext } from '../contexts/AppContext';
 import { ROUTES } from '../lib/routes';
 import { SessionTimerWidget } from './SessionTimerWidget';
@@ -112,15 +115,11 @@ export function ProtectedLayout() {
         <Group h="100%" px={"sm"} justify="space-between">
           <Group>
             <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" />
-            <Text
-              size="xl"
-              fw={900}
-              variant="gradient"
-              gradient={{ from: 'indigo', to: 'cyan', deg: 45 }}
-              style={{ letterSpacing: '1px' }}
-            >
-              Silent Memoirs
-            </Text>
+            <img
+              src={colorScheme === 'dark' ? logoDark : logoLight}
+              alt="Silent Memoirs"
+              style={{ height: 50, width: 'auto', display: 'block' }}
+            />
           </Group>
           <Group>
             {/* <DebugManifestButton /> */}
@@ -134,7 +133,6 @@ export function ProtectedLayout() {
                       alt={userProfile?.name ?? 'Google user avatar'}
                       radius="xl"
                       size="md"
-                      color="indigo"
                     >
                       {userInitials ?? <IconUser size={16} stroke={1.7} />}
                     </Avatar>
@@ -177,7 +175,6 @@ export function ProtectedLayout() {
         <div style={{ flex: 1 }}>
           <Button
             variant="light"
-            color="indigo"
             fullWidth
             mb="md"
             mt="md"

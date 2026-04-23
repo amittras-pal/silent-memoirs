@@ -1,6 +1,8 @@
-import { Button, Card, Center, Stack, Text, Title } from '@mantine/core';
+import { Button, Card, Center, Stack, Text, useMantineColorScheme } from '@mantine/core';
 import { GoogleOAuthProvider, useGoogleLogin } from '@react-oauth/google';
 import { useEffect, useState } from 'react';
+import logoDark from '../assets/logo-dark.svg';
+import logoLight from '../assets/logo-light.svg';
 import {
   cacheGoogleUserProfile,
   clearCachedGoogleUserProfile,
@@ -51,12 +53,10 @@ function LoginButton({ onAuthenticated }: AuthWallProps) {
   });
 
   return (
-    <Button 
-      size="lg" 
-      onClick={() => login()} 
+    <Button
+      size="lg"
+      onClick={() => login()}
       loading={loading}
-      variant="gradient"
-      gradient={{ from: 'indigo', to: 'cyan' }}
     >
       Connect Google Drive
     </Button>
@@ -64,13 +64,14 @@ function LoginButton({ onAuthenticated }: AuthWallProps) {
 }
 
 export function AuthWall({ onAuthenticated }: AuthWallProps) {
+  const { colorScheme } = useMantineColorScheme();
   // In a real production app, this Client ID should be loaded from env vars.
   // Using a placeholder for development plan scaffolding.
   const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || 'REQUIRE_SETUP.apps.googleusercontent.com';
 
   useEffect(() => {
     const cachedToken = localStorage.getItem('google_access_token');
-    
+
     if (cachedToken) {
       const storage = new GoogleDriveStorage(cachedToken);
       onAuthenticated(storage);
@@ -92,7 +93,11 @@ export function AuthWall({ onAuthenticated }: AuthWallProps) {
       <Center style={{ height: '100vh', backgroundColor: 'var(--mantine-color-body)' }}>
         <Card shadow="xl" p="xl" radius="md" withBorder style={{ maxWidth: 400, width: '100%' }}>
           <Stack align="center" gap="md">
-            <Title order={2} style={{ letterSpacing: '1px' }}>Silent Memoirs</Title>
+            <img
+              src={colorScheme === 'dark' ? logoDark : logoLight}
+              alt="Silent Memoirs"
+              style={{ height: 50, width: 'auto', display: 'block' }}
+            />
             <Text c="dimmed" ta="center" size="sm" mb="lg">
               Your journal is entirely local-first. Connect your Google Drive to enable encrypted synchronization.
             </Text>

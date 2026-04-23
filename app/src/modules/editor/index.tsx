@@ -263,9 +263,10 @@ export default function EditorModule() {
           size="xs"
         />
 
+        {/* TODO: Need to do something about these buttons */}
         <Group gap={6}>
           <Tooltip label="Save & Sync">
-            <ActionIcon loading={isSaving} onClick={handleSave} color="teal" variant="light" size="lg">
+            <ActionIcon loading={isSaving} onClick={handleSave} variant="light" size="lg">
               <IconDeviceFloppy size={20} />
             </ActionIcon>
           </Tooltip>

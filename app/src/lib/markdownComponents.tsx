@@ -42,11 +42,10 @@ export function createMarkdownComponents(
     // ------------------------------------------------------------- blockquote
     blockquote: ({ node: _node, children }: ChildrenProps) => (
       <Blockquote
-        color="indigo"
         py="xs"
         icon={<IconBlockquote size={18} />}
         iconSize={30}
-        styles={{ root: { borderLeftColor: "var(--mantine-color-blue-6)" } }}
+        styles={{ root: { borderLeftColor: "var(--mantine-color-terracotta-6)" } }}
       >
         {children}
       </Blockquote>

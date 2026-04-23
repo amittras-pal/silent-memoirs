@@ -7,6 +7,58 @@ export default defineConfig({
   base: '/silent-memoirs/',
   plugins: [
     react(),
-    VitePWA({ registerType: 'autoUpdate' })
+    VitePWA({
+      // Disable service worker registration — no offline capabilities needed
+      injectRegister: null,
+      selfDestroying: false,
+      includeAssets: ['favicon.svg', 'apple-touch-icon.png', 'Splash Logo.png'],
+      manifest: {
+        name: 'Silent Memoirs',
+        short_name: 'Silent Memoirs',
+        description: 'A private, encrypted personal journal — your memories, secured.',
+        start_url: '/silent-memoirs/',
+        scope: '/silent-memoirs/',
+        display: 'standalone',
+        orientation: 'portrait-primary',
+        background_color: '#693419',
+        theme_color: '#cd784d',
+        lang: 'en',
+        categories: ['lifestyle', 'productivity'],
+        icons: [
+          {
+            src: '/silent-memoirs/icon-192.png',
+            sizes: '192x192',
+            type: 'image/png',
+            purpose: 'any',
+          },
+          {
+            src: '/silent-memoirs/icon-192.png',
+            sizes: '192x192',
+            type: 'image/png',
+            purpose: 'maskable',
+          },
+          {
+            src: '/silent-memoirs/icon-512.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'any',
+          },
+          {
+            src: '/silent-memoirs/icon-512.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'maskable',
+          },
+        ],
+        screenshots: [
+          {
+            src: '/silent-memoirs/Splash Logo.png',
+            sizes: '598x598',
+            type: 'image/png',
+            label: 'Silent Memoirs',
+          },
+        ],
+      },
+    }),
   ],
 })

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Button, Center, Card, Title, Text, Stack, Alert, CopyButton, PasswordInput, ScrollArea, Textarea, Select, SegmentedControl } from '@mantine/core';
+import { Button, Center, Card, Title, Text, Stack, Alert, CopyButton, PasswordInput, ScrollArea, Textarea, Select, SegmentedControl, useMantineColorScheme } from '@mantine/core';
+import logoDark from '../assets/logo-dark.svg';
+import logoLight from '../assets/logo-light.svg';
 import { getDeviceAuthContext, type DeviceAuthContext } from '../lib/deviceAuth';
 import type { KeyringWebAuthnSlot } from '../lib/keyring';
 import { GoogleDriveStorage } from '../lib/storage';
@@ -23,6 +25,7 @@ function toErrorMessage(err: unknown): string {
 }
 
 export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetupWallProps) {
+  const { colorScheme } = useMantineColorScheme();
   const [isInitialized, setIsInitialized] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -290,6 +293,11 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
     <Center style={{ height: '100vh', backgroundColor: 'var(--mantine-color-body)' }}>
       <Card shadow="xl" p="xl" radius="md" withBorder style={{ maxWidth: 400, width: '100%' }}>
         <Stack align="center" gap="md">
+          <img
+            src={colorScheme === 'dark' ? logoDark : logoLight}
+            alt="Silent Memoirs"
+            style={{ height: 50, width: 'auto', display: 'block' }}
+          />
           <Title order={3}>
             {!isInitialized
               ? 'Create New Vault'
@@ -297,9 +305,9 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
                 ? 'Set a New Vault Password'
                 : unlockMode === 'webauthn'
                   ? 'Unlock with Device Authenticator'
-                : unlockMode === 'recovery'
-                  ? 'Recover Vault'
-                  : 'Vault Found'}
+                  : unlockMode === 'recovery'
+                    ? 'Recover Vault'
+                    : 'Vault Found'}
           </Title>
           <Text c="dimmed" ta="center" size="sm">
             {!isInitialized
@@ -308,11 +316,11 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
                 ? 'Recovery key verified. For security, you must set a new password before continuing.'
                 : unlockMode === 'webauthn'
                   ? 'Use the registered platform authenticator for this device. You will confirm with a biometric/device prompt after you tap unlock.'
-                : unlockMode === 'recovery'
-                  ? 'Paste your recovery key to unlock this vault and then immediately set a new password.'
-                  : 'Your encrypted vault is stored on Google Drive. Enter your vault password to unlock it.'}
+                  : unlockMode === 'recovery'
+                    ? 'Paste your recovery key to unlock this vault and then immediately set a new password.'
+                    : 'Your encrypted vault is stored on Google Drive. Enter your vault password to unlock it.'}
           </Text>
-          
+
           {error && <Alert color="red" w="100%">{error}</Alert>}
 
           {!isInitialized && (
@@ -418,23 +426,21 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
             </>
           )}
 
-          <Button 
-            size="lg" 
+          <Button
+            size="lg"
             w="100%"
             onClick={
               !isInitialized
                 ? handleCreateVault
                 : requiresPasswordReset
                   ? handleResetPasswordAfterRecovery
-                    : unlockMode === 'webauthn'
-                      ? handleWebAuthnUnlock
-                  : unlockMode === 'recovery'
-                    ? handleRecoveryUnlock
-                    : handleUnlockVault
+                  : unlockMode === 'webauthn'
+                    ? handleWebAuthnUnlock
+                    : unlockMode === 'recovery'
+                      ? handleRecoveryUnlock
+                      : handleUnlockVault
             }
             loading={loading}
-            variant="gradient"
-            gradient={{ from: 'indigo', to: 'cyan' }}
           >
             {!isInitialized
               ? 'Create Vault'
@@ -442,9 +448,9 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
                 ? 'Set New Password and Continue'
                 : unlockMode === 'webauthn'
                   ? 'Unlock with Device Authenticator'
-                : unlockMode === 'recovery'
-                  ? 'Unlock with Recovery Key'
-                  : 'Unlock Vault'}
+                  : unlockMode === 'recovery'
+                    ? 'Unlock with Recovery Key'
+                    : 'Unlock Vault'}
           </Button>
 
           {isInitialized && !requiresPasswordReset && (

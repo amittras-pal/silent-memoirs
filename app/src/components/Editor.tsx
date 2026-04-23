@@ -338,7 +338,6 @@ export function Editor({ value, onChange, storage, vaultIdentity, entryKey }: Ed
           <Group gap={4} wrap="nowrap">
             <Switch
               size="md"
-              color="indigo"
               checked={previewMode === "edit"}
               onChange={(event) => setPreviewMode(event.currentTarget.checked ? 'edit' : 'preview')}
               onLabel={<IconPencil size={12} stroke={2.5} />}
@@ -357,7 +356,7 @@ export function Editor({ value, onChange, storage, vaultIdentity, entryKey }: Ed
                   notifications.show({
                     title: 'Word Count',
                     message: `${getWordCount(localValue)} words`,
-                    color: 'indigo',
+                    color: 'terracotta',
                     icon: <IconLetterCase size={18} stroke={1.5} />,
                     autoClose: 3000,
                   })
