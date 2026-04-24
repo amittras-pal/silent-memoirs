@@ -3,6 +3,8 @@ import { useDisclosure } from '@mantine/hooks';
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import { IDLE_EXPORT_STATE, type ExportJobState } from '../lib/export/exportTypes';
+
 import { clearCachedGoogleToken } from '../components/AuthWall';
 import { useSessionManager } from '../components/SessionManager';
 import {
@@ -72,6 +74,10 @@ interface AppContextType {
   performVaultLock: () => void;
   getResumeRoute: () => string;
   triggerManifestRepair: () => Promise<void>;
+
+  exportJobState: ExportJobState;
+  setExportJobState: (state: ExportJobState) => void;
+  isExportRunning: boolean;
 }
 
 const AppContext = createContext<AppContextType | null>(null);
@@ -116,6 +122,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [countdown, setCountdown] = useState(30);
 
   const [repairStatus, setRepairStatus] = useState<string | null>(null);
+  const [exportJobState, setExportJobState] = useState<ExportJobState>(IDLE_EXPORT_STATE);
+  const isExportRunning = exportJobState.status === 'running';
 
   const setSessionAuthContext = useCallback((method: SessionAuthMethod | null, slotId: string | null = null) => {
     setCurrentSessionAuthMethod(method);
@@ -249,14 +257,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Before unload block
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (isDirty) {
+      if (isDirty || isExportRunning) {
         e.preventDefault();
-        e.returnValue = 'You have unsaved changes. Are you sure you want to leave?';
+        e.returnValue = isDirty
+          ? 'You have unsaved changes. Are you sure you want to leave?'
+          : 'A PDF export is in progress. Leaving will cancel it.';
       }
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [isDirty]);
+  }, [isDirty, isExportRunning]);
 
   // Inactivity tracking
   useEffect(() => {
@@ -374,6 +384,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     performVaultLock,
     getResumeRoute,
     triggerManifestRepair,
+    exportJobState,
+    setExportJobState,
+    isExportRunning,
   };
 
   return (

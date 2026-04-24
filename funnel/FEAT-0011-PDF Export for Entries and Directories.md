@@ -130,6 +130,7 @@ Allow users to export either a single entry or an entire directory of entries in
   - Second line: the year being exported. Smaller font-size.
   - If available, the user's Google profile picture should be included on the title page.
   - Profile name and picture are already available from the existing Google auth profile data; no additional fetch is required.
+  - Include the Application Logo As Well which is saved in `app/src/assets/logo-light.svg`
 - Build one PDF document where each entry starts on a new page:
   - Entry title at top.
   - Second line: entry date and time (formatted timestamp).

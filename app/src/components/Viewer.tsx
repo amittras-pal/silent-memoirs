@@ -1,5 +1,5 @@
 import { ActionIcon, Box, Group, Stack, Text, Tooltip, useMantineColorScheme } from '@mantine/core';
-import { IconMaximize, IconMinimize } from '@tabler/icons-react';
+import { IconFileExport, IconMaximize, IconMinimize } from '@tabler/icons-react';
 import MDEditor from '@uiw/react-md-editor';
 import { useMemo, useState } from 'react';
 import { resolveEntryTitle } from '../lib/entryTitle';
@@ -13,11 +13,13 @@ interface ViewerProps {
   date: string;
   storage: StorageProvider;
   secretKey: string;
+  onExportEntry?: () => void;
+  isExportRunning?: boolean;
 }
 
 
 
-export function Viewer({ title, content, date, storage, secretKey }: ViewerProps) {
+export function Viewer({ title, content, date, storage, secretKey, onExportEntry, isExportRunning }: ViewerProps) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const { colorScheme } = useMantineColorScheme();
 
@@ -54,6 +56,18 @@ export function Viewer({ title, content, date, storage, secretKey }: ViewerProps
           </Stack>
 
           <Group gap={4} wrap="nowrap">
+            {onExportEntry && (
+              <Tooltip label="Export to PDF" withArrow position="bottom" openDelay={300}>
+                <ActionIcon
+                  variant="subtle"
+                  color="gray"
+                  onClick={onExportEntry}
+                  disabled={isExportRunning}
+                >
+                  <IconFileExport size={18} stroke={1.5} />
+                </ActionIcon>
+              </Tooltip>
+            )}
             <Tooltip label={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'} withArrow position="bottom" openDelay={300}>
               <ActionIcon variant="subtle" color="gray" onClick={() => setIsFullscreen(!isFullscreen)}>
                 {isFullscreen ? <IconMinimize size={18} stroke={1.5} /> : <IconMaximize size={18} stroke={1.5} />}
