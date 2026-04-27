@@ -5,9 +5,7 @@ import { Center, Loader } from '@mantine/core';
 import { useAppContext } from '../../contexts/AppContext';
 import { ROUTES, decodeEntryPath } from '../../lib/routes';
 import { Viewer } from '../../components/Viewer';
-import { ExportWarningModal } from '../../components/ExportWarningModal';
 import { resolveEntryTitle } from '../../lib/entryTitle';
-import { startSingleEntryExport } from '../../lib/export/pdfExport';
 import type { GoogleDriveStorage } from '../../lib/storage';
 
 export default function ViewerModule() {
@@ -16,9 +14,6 @@ export default function ViewerModule() {
     syncEngine,
     vaultManager,
     triggerManifestRepair,
-    userProfile,
-    setExportJobState,
-    isExportRunning,
   } = useAppContext();
   const location = useLocation();
   const navigate = useNavigate();
@@ -27,8 +22,7 @@ export default function ViewerModule() {
   const [viewTitle, setViewTitle] = useState('');
   const [viewContent, setViewContent] = useState('');
   const [viewDate, setViewDate] = useState('');
-  const [exportWarningOpen, setExportWarningOpen] = useState(false);
-  
+
   const routeQuery = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const routeEntryPath = useMemo(() => decodeEntryPath(routeQuery.get('e')), [routeQuery]);
 
@@ -70,34 +64,6 @@ export default function ViewerModule() {
     };
   }, [navigate, routeEntryPath, syncEngine]);
 
-  const handleExportEntry = useCallback(() => {
-    setExportWarningOpen(true);
-  }, []);
-
-  const handleExportConfirm = useCallback(async () => {
-    setExportWarningOpen(false);
-    if (!vaultManager?.identity || !storage || !routeEntryPath) return;
-
-    const driveStorage = storage as GoogleDriveStorage;
-
-    try {
-      await startSingleEntryExport(
-        {
-          entryTitle: viewTitle,
-          entryContent: viewContent,
-          entryDate: viewDate,
-          entryPath: routeEntryPath,
-          secretKey: vaultManager.identity.secretKey,
-          accessToken: (driveStorage as any).accessToken,
-          userName: userProfile?.name ?? 'Google User',
-        },
-        { onStateChange: setExportJobState },
-      );
-    } catch (err) {
-      console.error('Failed to start single entry export', err);
-    }
-  }, [vaultManager, storage, routeEntryPath, viewTitle, viewContent, viewDate, userProfile, setExportJobState]);
-
   if (!vaultManager || !storage) return null;
 
   if (isLoading || !routeEntryPath) {
@@ -109,21 +75,12 @@ export default function ViewerModule() {
   }
 
   return (
-    <>
-      <Viewer
-        title={viewTitle}
-        content={viewContent}
-        date={viewDate}
-        storage={storage}
-        secretKey={vaultManager.identity!.secretKey}
-        onExportEntry={handleExportEntry}
-        isExportRunning={isExportRunning}
-      />
-      <ExportWarningModal
-        opened={exportWarningOpen}
-        onConfirm={handleExportConfirm}
-        onCancel={() => setExportWarningOpen(false)}
-      />
-    </>
+    <Viewer
+      title={viewTitle}
+      content={viewContent}
+      date={viewDate}
+      storage={storage}
+      secretKey={vaultManager.identity!.secretKey}
+    />
   );
 }
