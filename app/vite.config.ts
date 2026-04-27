@@ -1,10 +1,30 @@
 import { defineConfig } from 'vite'
+import { resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
 export default defineConfig({
   base: '/silent-memoirs/',
+  resolve: {
+    alias: {
+      // The 'decode-named-character-reference' package exports a "browser"
+      // condition that uses document.createElement(), which breaks in Web
+      // Workers. Force the pure-JS implementation everywhere.
+      'decode-named-character-reference': resolve(
+        __dirname,
+        'node_modules/decode-named-character-reference/index.js'
+      ),
+    },
+  },
+  worker: {
+    format: 'es',
+  },
+  optimizeDeps: {
+    // fontkit has CJS transitive deps (brotli, clone, dfa, etc.) that break
+    // in module workers during dev. Pre-bundling converts them to ESM.
+    include: ['fontkit'],
+  },
   plugins: [
     react(),
     VitePWA({

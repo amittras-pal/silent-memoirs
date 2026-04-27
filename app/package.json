@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --force",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
@@ -15,6 +15,7 @@
     "@mantine/dates": "^9.0.1",
     "@mantine/hooks": "^9.0.1",
     "@mantine/notifications": "^9.0.2",
+    "@pdf-lib/fontkit": "^1.1.1",
     "@react-oauth/google": "^0.13.5",
     "@tabler/icons-react": "^3.41.1",
     "@uiw/react-md-editor": "^4.1.0",
