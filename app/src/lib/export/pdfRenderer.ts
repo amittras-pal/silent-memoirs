@@ -5,6 +5,7 @@
 // =============================================================
 
 import { PDFDocument, PDFFont, PDFPage, rgb, StandardFonts, PDFImage, PageSizes } from 'pdf-lib';
+import fontkit from '@pdf-lib/fontkit';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
@@ -35,6 +36,7 @@ const COLOR_TEXT = rgb(0.1, 0.1, 0.1);
 const COLOR_DIMMED = rgb(0.45, 0.45, 0.45);
 const COLOR_BLOCKQUOTE_BORDER = rgb(0.804, 0.471, 0.302); // terracotta-6 approx #cd784d
 const COLOR_BLOCKQUOTE_BG = rgb(0.96, 0.93, 0.9);
+const COLOR_ENTRY_TITLE = rgb(0.796, 0.431, 0.251); // terracotta-6 #cb6e40
 const COLOR_TABLE_HEADER_BG = rgb(0.92, 0.92, 0.92);
 const COLOR_TABLE_BORDER = rgb(0.75, 0.75, 0.75);
 const COLOR_RULE = rgb(0.8, 0.8, 0.8);
@@ -42,11 +44,11 @@ const COLOR_RULE = rgb(0.8, 0.8, 0.8);
 // --- Types ---
 
 export interface PdfFonts {
-  ralewayRegular: PDFFont;
-  ralewayBold: PDFFont;
-  crimsonRegular: PDFFont;
-  crimsonBold: PDFFont;
-  crimsonItalic: PDFFont;
+  montserratRegular: PDFFont;
+  montserratBold: PDFFont;
+  garamondRegular: PDFFont;
+  garamondBold: PDFFont;
+  garamondItalic: PDFFont;
   courier: PDFFont;
 }
 
@@ -80,13 +82,14 @@ export async function embedFonts(
   doc: PDFDocument,
   fontBuffers: Record<string, ArrayBuffer>,
 ): Promise<PdfFonts> {
-  const ralewayRegular = await doc.embedFont(new Uint8Array(fontBuffers['Raleway-Regular.ttf']));
-  const ralewayBold = await doc.embedFont(new Uint8Array(fontBuffers['Raleway-Bold.ttf']));
-  const crimsonRegular = await doc.embedFont(new Uint8Array(fontBuffers['CrimsonPro-Regular.ttf']));
-  const crimsonBold = await doc.embedFont(new Uint8Array(fontBuffers['CrimsonPro-Bold.ttf']));
-  const crimsonItalic = await doc.embedFont(new Uint8Array(fontBuffers['CrimsonPro-Italic.ttf']));
+  doc.registerFontkit(fontkit);
+  const montserratRegular = await doc.embedFont(new Uint8Array(fontBuffers['Montserrat-Regular.ttf']));
+  const montserratBold = await doc.embedFont(new Uint8Array(fontBuffers['Montserrat-Bold.ttf']));
+  const garamondRegular = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-Regular.ttf']));
+  const garamondBold = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-Bold.ttf']));
+  const garamondItalic = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-Italic.ttf']));
   const courier = await doc.embedFont(StandardFonts.Courier);
-  return { ralewayRegular, ralewayBold, crimsonRegular, crimsonBold, crimsonItalic, courier };
+  return { montserratRegular, montserratBold, garamondRegular, garamondBold, garamondItalic, courier };
 }
 
 // --- Page management ---
@@ -100,6 +103,60 @@ function ensureSpace(ctx: RenderContext, needed: number): void {
   if (ctx.y - needed < MARGIN) {
     addPage(ctx);
   }
+}
+
+// --- Text sanitization ---
+// pdf-lib uses fontkit which applies OpenType GSUB ligature substitutions,
+// producing glyphs with broken ToUnicode mappings (e.g. "fl" → "ϱ").
+// We insert ZWNJ (U+200C) between ligature-forming pairs to prevent this.
+// We also decompose pre-existing Unicode ligature codepoints (U+FB00–06)
+// and strip characters the font cannot encode.
+
+const LIGATURE_MAP: Record<string, string> = {
+  '\uFB00': 'ff',
+  '\uFB01': 'fi',
+  '\uFB02': 'fl',
+  '\uFB03': 'ffi',
+  '\uFB04': 'ffl',
+  '\uFB05': 'st',
+  '\uFB06': 'st',
+};
+
+const LIGATURE_RE = /[\uFB00-\uFB06]/g;
+
+// Insert ZWNJ between common Latin ligature-forming pairs (ff, fi, fl, fj, fb).
+const LIGATURE_BREAK_RE = /f(?=[fifjlb])/gi;
+const ZWNJ = '\u200C';
+
+// Common Unicode punctuation / symbol replacements
+const UNICODE_REPLACEMENTS: [RegExp, string][] = [
+  [/[\u2018\u2019\u201A\uFF07]/g, "'"],    // smart single quotes → '
+  [/[\u201C\u201D\u201E\uFF02]/g, '"'],    // smart double quotes → "
+  [/[\u2013\u2014]/g, '-'],                 // en/em dash → -
+  [/\u2026/g, '...'],                        // ellipsis → ...
+  [/\u00A0/g, ' '],                          // non-breaking space → space
+  [/[\u2022\u2023\u25E6\u2043]/g, '*'],     // bullet variants → *
+  [/\u00D7/g, 'x'],                         // multiplication sign → x
+  [/[\u2190-\u21FF]/g, '->'],               // arrows → ->
+];
+
+function sanitizeText(text: string): string {
+  // 1. Decompose any pre-existing Unicode ligature codepoints
+  let result = text.replace(LIGATURE_RE, (ch) => LIGATURE_MAP[ch] ?? ch);
+
+  // 2. Break ligature-forming sequences with ZWNJ
+  result = result.replace(LIGATURE_BREAK_RE, `f${ZWNJ}`);
+
+  // 3. Replace common Unicode punctuation with ASCII equivalents
+  for (const [pattern, replacement] of UNICODE_REPLACEMENTS) {
+    result = result.replace(pattern, replacement);
+  }
+
+  // 4. Strip any remaining non-encodable characters.
+  //    Keep printable ASCII, Latin-1 Supplement, and ZWNJ.
+  result = result.replace(/[^\x09\x0A\x0D\x20-\x7E\u00A0-\u00FF\u200C]/g, '?');
+
+  return result;
 }
 
 // --- Text utilities ---
@@ -135,7 +192,7 @@ function drawTextLines(
   const lineHeight = fontSize * LINE_HEIGHT_FACTOR;
   for (const line of lines) {
     ensureSpace(ctx, lineHeight);
-    ctx.page.drawText(line, {
+    ctx.page.drawText(sanitizeText(line), {
       x: MARGIN + xOffset,
       y: ctx.y - fontSize,
       size: fontSize,
@@ -184,52 +241,13 @@ function renderPhrasingContent(
   xOffset = 0,
   maxWidth = CONTENT_WIDTH,
 ): void {
-  // For simplicity, render each top-level phrasing node as a block.
-  // Mixed inline styling within a single line is complex with pdf-lib;
-  // we handle the most common patterns: plain, bold, italic, code.
-  for (const node of nodes) {
-    switch (node.type) {
-      case 'text': {
-        drawWrappedText(ctx, node.value, ctx.fonts.crimsonRegular, baseFontSize, COLOR_TEXT, xOffset, maxWidth);
-        break;
-      }
-      case 'strong': {
-        const text = extractText(node.children);
-        drawWrappedText(ctx, text, ctx.fonts.crimsonBold, baseFontSize, COLOR_TEXT, xOffset, maxWidth);
-        break;
-      }
-      case 'emphasis': {
-        const text = extractText(node.children);
-        drawWrappedText(ctx, text, ctx.fonts.crimsonItalic, baseFontSize, COLOR_TEXT, xOffset, maxWidth);
-        break;
-      }
-      case 'inlineCode': {
-        drawWrappedText(ctx, node.value, ctx.fonts.courier, FONT_SIZE_CODE, COLOR_TEXT, xOffset, maxWidth);
-        break;
-      }
-      case 'link': {
-        const text = extractText(node.children);
-        drawWrappedText(ctx, text, ctx.fonts.crimsonRegular, baseFontSize, COLOR_TEXT, xOffset, maxWidth);
-        break;
-      }
-      case 'break': {
-        ctx.y -= baseFontSize * LINE_HEIGHT_FACTOR;
-        break;
-      }
-      default: {
-        // For any unhandled phrasing node, extract raw text
-        if ('children' in node) {
-          const text = extractText((node as { children: PhrasingContent[] }).children);
-          if (text) {
-            drawWrappedText(ctx, text, ctx.fonts.crimsonRegular, baseFontSize, COLOR_TEXT, xOffset, maxWidth);
-          }
-        } else if ('value' in node) {
-          drawWrappedText(ctx, (node as { value: string }).value, ctx.fonts.crimsonRegular, baseFontSize, COLOR_TEXT, xOffset, maxWidth);
-        }
-        break;
-      }
-    }
-  }
+  // Flatten all inline nodes into a single text string so the paragraph
+  // wraps naturally. pdf-lib doesn't support mixed fonts on one line, so
+  // we render everything with the body font.  Bold/italic markers are lost
+  // in the PDF but the text flows correctly.
+  const fullText = extractText(nodes);
+  if (!fullText.trim()) return;
+  drawWrappedText(ctx, fullText, ctx.fonts.garamondRegular, baseFontSize, COLOR_TEXT, xOffset, maxWidth);
 }
 
 // --- Block-level node rendering ---
@@ -244,13 +262,32 @@ async function renderImage(ctx: RenderContext, url: string): Promise<void> {
 
   let pdfImage: PDFImage;
   try {
-    // Try PNG first, then JPEG
-    try {
+    // Detect format from magic bytes to avoid try/catch corruption
+    const isPng =
+      imageBytes.length >= 8 &&
+      imageBytes[0] === 0x89 &&
+      imageBytes[1] === 0x50 &&
+      imageBytes[2] === 0x4e &&
+      imageBytes[3] === 0x47;
+    const isJpeg =
+      imageBytes.length >= 3 &&
+      imageBytes[0] === 0xff &&
+      imageBytes[1] === 0xd8 &&
+      imageBytes[2] === 0xff;
+
+    if (isPng) {
       pdfImage = await ctx.doc.embedPng(imageBytes);
-    } catch {
+    } else if (isJpeg) {
       pdfImage = await ctx.doc.embedJpg(imageBytes);
+    } else {
+      // Unknown format — try both as fallback
+      try {
+        pdfImage = await ctx.doc.embedPng(imageBytes);
+      } catch {
+        pdfImage = await ctx.doc.embedJpg(imageBytes);
+      }
     }
-  } catch {
+  } catch (err) {
     ctx.warnings.push(`Failed to embed image: ${url}`);
     drawWrappedText(ctx, `[Image could not be exported: ${url}]`, ctx.fonts.courier, FONT_SIZE_CODE, COLOR_DIMMED);
     ctx.y -= 4;
@@ -280,8 +317,8 @@ async function renderImage(ctx: RenderContext, url: string): Promise<void> {
   ctx.y -= finalHeight + 8;
 }
 
-function renderBlockquote(ctx: RenderContext, children: RootContent[]): void {
-  const indent = 16;
+async function renderBlockquote(ctx: RenderContext, children: RootContent[]): Promise<void> {
+  const indent = 0;
   const borderWidth = 4;
   const padding = 8;
   const savedY = ctx.y;
@@ -289,7 +326,7 @@ function renderBlockquote(ctx: RenderContext, children: RootContent[]): void {
   // Render children with indent, collecting the Y range
   ctx.y -= padding;
   for (const child of children) {
-    renderNode(ctx, child, indent + borderWidth + padding);
+    await renderNode(ctx, child, indent + borderWidth + padding);
   }
   ctx.y -= padding;
 
@@ -317,7 +354,7 @@ function renderBlockquote(ctx: RenderContext, children: RootContent[]): void {
   // Re-render text on top of background
   ctx.y = savedY - padding;
   for (const child of children) {
-    renderNode(ctx, child, indent + borderWidth + padding);
+    await renderNode(ctx, child, indent + borderWidth + padding);
   }
   ctx.y -= padding;
 }
@@ -354,7 +391,7 @@ function renderTable(ctx: RenderContext, rows: TableRow[]): void {
     for (let colIdx = 0; colIdx < colCount; colIdx++) {
       const cell: TableCell | undefined = row.children[colIdx];
       const cellText = cell ? extractText(cell.children as PhrasingContent[]) : '';
-      const font = rowIdx === 0 ? ctx.fonts.crimsonBold : ctx.fonts.crimsonRegular;
+      const font = rowIdx === 0 ? ctx.fonts.garamondBold : ctx.fonts.garamondRegular;
       const truncated = truncateToWidth(cellText, font, FONT_SIZE_BODY, colWidth - cellPadding * 2);
 
       ctx.page.drawText(truncated, {
@@ -405,18 +442,18 @@ function truncateToWidth(text: string, font: PDFFont, fontSize: number, maxWidth
   return truncated + '…';
 }
 
-function renderListItems(ctx: RenderContext, items: ListItem[], ordered: boolean, xOffset: number): void {
+async function renderListItems(ctx: RenderContext, items: ListItem[], ordered: boolean, xOffset: number): Promise<void> {
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const bullet = ordered ? `${i + 1}. ` : '• ';
-    const bulletWidth = ctx.fonts.crimsonRegular.widthOfTextAtSize(bullet, FONT_SIZE_BODY);
+    const bulletWidth = ctx.fonts.garamondRegular.widthOfTextAtSize(bullet, FONT_SIZE_BODY);
 
     ensureSpace(ctx, FONT_SIZE_BODY * LINE_HEIGHT_FACTOR);
     ctx.page.drawText(bullet, {
       x: MARGIN + xOffset,
       y: ctx.y - FONT_SIZE_BODY,
       size: FONT_SIZE_BODY,
-      font: ctx.fonts.crimsonRegular,
+      font: ctx.fonts.garamondRegular,
       color: COLOR_TEXT,
     });
 
@@ -425,9 +462,9 @@ function renderListItems(ctx: RenderContext, items: ListItem[], ordered: boolean
       if (child.type === 'paragraph' && 'children' in child) {
         renderPhrasingContent(ctx, child.children, FONT_SIZE_BODY, xOffset + bulletWidth, CONTENT_WIDTH);
       } else if (child.type === 'list') {
-        renderListItems(ctx, child.children as ListItem[], child.ordered ?? false, xOffset + 16);
+        await renderListItems(ctx, child.children as ListItem[], child.ordered ?? false, xOffset + 16);
       } else {
-        renderNode(ctx, child, xOffset + bulletWidth);
+        await renderNode(ctx, child, xOffset + bulletWidth);
       }
     }
   }
@@ -435,7 +472,7 @@ function renderListItems(ctx: RenderContext, items: ListItem[], ordered: boolean
 
 // --- Main node dispatcher ---
 
-function renderNode(ctx: RenderContext, node: RootContent, xOffset = 0): void {
+async function renderNode(ctx: RenderContext, node: RootContent, xOffset = 0): Promise<void> {
   switch (node.type) {
     case 'heading': {
       const depth = node.depth ?? 1;
@@ -443,27 +480,46 @@ function renderNode(ctx: RenderContext, node: RootContent, xOffset = 0): void {
       const fontSize = sizes[Math.min(depth - 1, sizes.length - 1)];
       const text = extractText(node.children);
       ctx.y -= 4; // spacing before heading
-      drawWrappedText(ctx, text, ctx.fonts.ralewayBold, fontSize, COLOR_TEXT, xOffset);
+      drawWrappedText(ctx, text, ctx.fonts.montserratBold, fontSize, COLOR_TEXT, xOffset);
       ctx.y -= 2; // spacing after heading
       break;
     }
     case 'paragraph': {
-      if (node.children.length === 1 && node.children[0].type === 'image') {
-        // Image-only paragraph: render the image
-        const imgNode = node.children[0];
-        void renderImage(ctx, imgNode.url);
+      // Check if paragraph contains any images
+      const hasImages = node.children.some((c) => c.type === 'image');
+      if (hasImages) {
+        // Render images and text segments separately
+        let textBuf: PhrasingContent[] = [];
+        for (const child of node.children) {
+          if (child.type === 'image') {
+            // Flush accumulated text first
+            if (textBuf.length > 0) {
+              renderPhrasingContent(ctx, textBuf, FONT_SIZE_BODY, xOffset);
+              textBuf = [];
+            }
+            await renderImage(ctx, child.url);
+          } else {
+            textBuf.push(child);
+          }
+        }
+        // Flush remaining text
+        if (textBuf.length > 0) {
+          renderPhrasingContent(ctx, textBuf, FONT_SIZE_BODY, xOffset);
+        }
+        ctx.y -= 8;
       } else {
         renderPhrasingContent(ctx, node.children, FONT_SIZE_BODY, xOffset);
-        ctx.y -= 4;
+        ctx.y -= 8;
       }
       break;
     }
     case 'blockquote': {
-      renderBlockquote(ctx, node.children);
+      await renderBlockquote(ctx, node.children);
+      ctx.y -= 8; // gap after blockquote
       break;
     }
     case 'list': {
-      renderListItems(ctx, node.children as ListItem[], node.ordered ?? false, xOffset);
+      await renderListItems(ctx, node.children as ListItem[], node.ordered ?? false, xOffset);
       ctx.y -= 4;
       break;
     }
@@ -499,7 +555,7 @@ function renderNode(ctx: RenderContext, node: RootContent, xOffset = 0): void {
       // Best-effort: try to extract text from unknown nodes
       if ('children' in node) {
         for (const child of (node as { children: RootContent[] }).children) {
-          renderNode(ctx, child, xOffset);
+          await renderNode(ctx, child, xOffset);
         }
       }
       break;
@@ -549,24 +605,24 @@ async function renderDirectoryTitlePage(
 
   // Title: "<Name>'s Journal"
   const titleText = `${data.userName}'s Journal`;
-  const titleWidth = ctx.fonts.ralewayBold.widthOfTextAtSize(titleText, FONT_SIZE_TITLE_PAGE_NAME);
+  const titleWidth = ctx.fonts.montserratBold.widthOfTextAtSize(titleText, FONT_SIZE_TITLE_PAGE_NAME);
   ctx.page.drawText(titleText, {
     x: centerX - titleWidth / 2,
     y: currentY - FONT_SIZE_TITLE_PAGE_NAME,
     size: FONT_SIZE_TITLE_PAGE_NAME,
-    font: ctx.fonts.ralewayBold,
+    font: ctx.fonts.montserratBold,
     color: COLOR_TEXT,
   });
   currentY -= FONT_SIZE_TITLE_PAGE_NAME + 12;
 
   // Year
   if (data.year) {
-    const yearWidth = ctx.fonts.ralewayRegular.widthOfTextAtSize(data.year, FONT_SIZE_TITLE_PAGE_YEAR);
+    const yearWidth = ctx.fonts.montserratRegular.widthOfTextAtSize(data.year, FONT_SIZE_TITLE_PAGE_YEAR);
     ctx.page.drawText(data.year, {
       x: centerX - yearWidth / 2,
       y: currentY - FONT_SIZE_TITLE_PAGE_YEAR,
       size: FONT_SIZE_TITLE_PAGE_YEAR,
-      font: ctx.fonts.ralewayRegular,
+      font: ctx.fonts.montserratRegular,
       color: COLOR_DIMMED,
     });
     currentY -= FONT_SIZE_TITLE_PAGE_YEAR + 24;
@@ -592,128 +648,26 @@ async function renderDirectoryTitlePage(
   }
 }
 
-async function renderSingleEntryTitlePage(
-  ctx: RenderContext,
-  data: TitlePageData,
-): Promise<void> {
-  addPage(ctx);
-
-  const centerX = PAGE_WIDTH / 2;
-  let currentY = PAGE_HEIGHT - MARGIN - 160;
-
-  // Entry title
-  if (data.entryTitle) {
-    const titleWidth = ctx.fonts.ralewayBold.widthOfTextAtSize(data.entryTitle, FONT_SIZE_TITLE_PAGE_NAME);
-    const titleX = titleWidth > CONTENT_WIDTH ? MARGIN : centerX - titleWidth / 2;
-    if (titleWidth > CONTENT_WIDTH) {
-      const lines = wrapText(data.entryTitle, ctx.fonts.ralewayBold, FONT_SIZE_TITLE_PAGE_NAME, CONTENT_WIDTH);
-      for (const line of lines) {
-        const lw = ctx.fonts.ralewayBold.widthOfTextAtSize(line, FONT_SIZE_TITLE_PAGE_NAME);
-        ctx.page.drawText(line, {
-          x: centerX - lw / 2,
-          y: currentY - FONT_SIZE_TITLE_PAGE_NAME,
-          size: FONT_SIZE_TITLE_PAGE_NAME,
-          font: ctx.fonts.ralewayBold,
-          color: COLOR_TEXT,
-        });
-        currentY -= FONT_SIZE_TITLE_PAGE_NAME * LINE_HEIGHT_FACTOR;
-      }
-    } else {
-      ctx.page.drawText(data.entryTitle, {
-        x: titleX,
-        y: currentY - FONT_SIZE_TITLE_PAGE_NAME,
-        size: FONT_SIZE_TITLE_PAGE_NAME,
-        font: ctx.fonts.ralewayBold,
-        color: COLOR_TEXT,
-      });
-      currentY -= FONT_SIZE_TITLE_PAGE_NAME + 12;
-    }
-  }
-
-  // Entry date
-  if (data.entryDate) {
-    const dateDisplay = data.entryDate.replace('_', ' ');
-    const dateWidth = ctx.fonts.ralewayRegular.widthOfTextAtSize(dateDisplay, FONT_SIZE_TITLE_PAGE_YEAR);
-    ctx.page.drawText(dateDisplay, {
-      x: centerX - dateWidth / 2,
-      y: currentY - FONT_SIZE_TITLE_PAGE_YEAR,
-      size: FONT_SIZE_TITLE_PAGE_YEAR,
-      font: ctx.fonts.ralewayRegular,
-      color: COLOR_DIMMED,
-    });
-    currentY -= FONT_SIZE_TITLE_PAGE_YEAR + 16;
-  }
-
-  // User name
-  const byText = data.userName;
-  const byWidth = ctx.fonts.ralewayRegular.widthOfTextAtSize(byText, FONT_SIZE_BODY);
-  ctx.page.drawText(byText, {
-    x: centerX - byWidth / 2,
-    y: currentY - FONT_SIZE_BODY,
-    size: FONT_SIZE_BODY,
-    font: ctx.fonts.ralewayRegular,
-    color: COLOR_DIMMED,
-  });
-}
-
 // --- Entry rendering ---
 
 function renderEntryHeader(ctx: RenderContext, title: string, date: string): void {
   // Title
-  drawWrappedText(ctx, title, ctx.fonts.ralewayBold, FONT_SIZE_ENTRY_TITLE, COLOR_TEXT);
+  drawWrappedText(ctx, title, ctx.fonts.montserratBold, FONT_SIZE_ENTRY_TITLE, COLOR_ENTRY_TITLE);
   ctx.y -= 2;
   // Date/time
   const dateDisplay = date.replace('_', ' ');
-  drawWrappedText(ctx, dateDisplay, ctx.fonts.ralewayRegular, FONT_SIZE_ENTRY_TIMESTAMP, COLOR_DIMMED);
+  drawWrappedText(ctx, dateDisplay, ctx.fonts.montserratRegular, FONT_SIZE_ENTRY_TIMESTAMP, COLOR_DIMMED);
   ctx.y -= 12;
 }
 
 async function renderEntryContent(ctx: RenderContext, markdown: string): Promise<void> {
   const tree = parseMarkdown(markdown);
   for (const node of tree.children) {
-    renderNode(ctx, node);
+    await renderNode(ctx, node);
   }
 }
 
 // --- Public API ---
-
-export async function renderSingleEntryPdf(
-  entry: ExportEntryData,
-  fonts: Record<string, ArrayBuffer>,
-  images: Map<string, Uint8Array>,
-  userName: string,
-): Promise<{ pdfBytes: Uint8Array; warnings: string[] }> {
-  const doc = await PDFDocument.create();
-  const pdfFonts = await embedFonts(doc, fonts);
-  const warnings: string[] = [];
-
-  const ctx: RenderContext = {
-    doc,
-    fonts: pdfFonts,
-    page: doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]), // placeholder, replaced by title page
-    y: PAGE_HEIGHT - MARGIN,
-    images,
-    warnings,
-  };
-
-  // Remove placeholder page
-  doc.removePage(0);
-
-  // Title page
-  await renderSingleEntryTitlePage(ctx, {
-    userName,
-    entryTitle: entry.title,
-    entryDate: entry.date,
-  });
-
-  // Content page
-  addPage(ctx);
-  renderEntryHeader(ctx, entry.title, entry.date);
-  await renderEntryContent(ctx, entry.content);
-
-  const pdfBytes = await doc.save();
-  return { pdfBytes: new Uint8Array(pdfBytes), warnings };
-}
 
 export async function renderDirectoryPdf(
   entries: ExportEntryData[],

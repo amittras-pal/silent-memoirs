@@ -6,17 +6,16 @@
 import type {
   ExportJobState,
   WorkerToMainMessage,
-  StartExportSingleMessage,
   StartExportDirectoryMessage,
 } from './exportTypes';
 import { IDLE_EXPORT_STATE } from './exportTypes';
 
 // Font asset URLs — resolved at import time by Vite
-import ralewayRegularUrl from '../../assets/fonts/Raleway-Regular.ttf?url';
-import ralewayBoldUrl from '../../assets/fonts/Raleway-Bold.ttf?url';
-import crimsonRegularUrl from '../../assets/fonts/CrimsonPro-Regular.ttf?url';
-import crimsonBoldUrl from '../../assets/fonts/CrimsonPro-Bold.ttf?url';
-import crimsonItalicUrl from '../../assets/fonts/CrimsonPro-Italic.ttf?url';
+import montserratRegularUrl from '../../assets/fonts/Montserrat/static/Montserrat-Regular.ttf?url';
+import montserratBoldUrl from '../../assets/fonts/Montserrat/static/Montserrat-Bold.ttf?url';
+import garamondRegularUrl from '../../assets/fonts/EB_Garamond/static/EBGaramond-Regular.ttf?url';
+import garamondBoldUrl from '../../assets/fonts/EB_Garamond/static/EBGaramond-Bold.ttf?url';
+import garamondItalicUrl from '../../assets/fonts/EB_Garamond/static/EBGaramond-Italic.ttf?url';
 import logoUrl from '../../assets/logo-light-raster.png?url';
 
 // --- Types ---
@@ -48,19 +47,19 @@ async function fetchAsArrayBuffer(url: string): Promise<ArrayBuffer> {
 }
 
 async function loadFonts(): Promise<Record<string, ArrayBuffer>> {
-  const [ralewayRegular, ralewayBold, crimsonRegular, crimsonBold, crimsonItalic] = await Promise.all([
-    fetchAsArrayBuffer(ralewayRegularUrl),
-    fetchAsArrayBuffer(ralewayBoldUrl),
-    fetchAsArrayBuffer(crimsonRegularUrl),
-    fetchAsArrayBuffer(crimsonBoldUrl),
-    fetchAsArrayBuffer(crimsonItalicUrl),
+  const [montserratRegular, montserratBold, garamondRegular, garamondBold, garamondItalic] = await Promise.all([
+    fetchAsArrayBuffer(montserratRegularUrl),
+    fetchAsArrayBuffer(montserratBoldUrl),
+    fetchAsArrayBuffer(garamondRegularUrl),
+    fetchAsArrayBuffer(garamondBoldUrl),
+    fetchAsArrayBuffer(garamondItalicUrl),
   ]);
   return {
-    'Raleway-Regular.ttf': ralewayRegular,
-    'Raleway-Bold.ttf': ralewayBold,
-    'CrimsonPro-Regular.ttf': crimsonRegular,
-    'CrimsonPro-Bold.ttf': crimsonBold,
-    'CrimsonPro-Italic.ttf': crimsonItalic,
+    'Montserrat-Regular.ttf': montserratRegular,
+    'Montserrat-Bold.ttf': montserratBold,
+    'EBGaramond-Regular.ttf': garamondRegular,
+    'EBGaramond-Bold.ttf': garamondBold,
+    'EBGaramond-Italic.ttf': garamondItalic,
   };
 }
 
@@ -164,79 +163,6 @@ export function cancelExport(): void {
   activeJob.worker.postMessage({ type: 'CANCEL_EXPORT', jobId: activeJob.jobId });
 }
 
-export async function startSingleEntryExport(
-  params: {
-    entryTitle: string;
-    entryContent: string;
-    entryDate: string;
-    entryPath: string;
-    secretKey: string;
-    accessToken: string;
-    userName: string;
-  },
-  callbacks: ExportCallbacks,
-): Promise<void> {
-  if (activeJob) {
-    throw new Error('An export is already in progress');
-  }
-
-  const jobId = generateJobId();
-
-  callbacks.onStateChange({
-    status: 'running',
-    jobId,
-    jobType: 'single',
-    percent: 0,
-    stage: 'preparing',
-    stageText: 'Loading fonts…',
-  });
-
-  try {
-    const fonts = await loadFonts();
-    const worker = createWorker();
-
-    activeJob = { jobId, worker, callbacks };
-    worker.onmessage = handleWorkerMessage;
-    worker.onerror = (err) => {
-      callbacks.onStateChange({
-        status: 'failed',
-        jobId,
-        error: err.message || 'Worker error',
-        stage: 'preparing',
-      });
-      cleanupJob();
-    };
-
-    // Extract media paths from content
-    const { extractEncryptedMediaPaths } = await import('../media');
-    const mediaPaths = extractEncryptedMediaPaths(params.entryContent);
-
-    const msg: StartExportSingleMessage = {
-      type: 'START_EXPORT_SINGLE',
-      jobId,
-      entryTitle: params.entryTitle,
-      entryContent: params.entryContent,
-      entryDate: params.entryDate,
-      entryPath: params.entryPath,
-      mediaPaths,
-      secretKey: params.secretKey,
-      accessToken: params.accessToken,
-      fonts,
-      userName: params.userName,
-    };
-
-    worker.postMessage(msg);
-  } catch (err) {
-    callbacks.onStateChange({
-      status: 'failed',
-      jobId,
-      error: err instanceof Error ? err.message : String(err),
-      stage: 'preparing',
-    });
-    cleanupJob();
-  }
-}
-
 export async function startDirectoryExport(
   params: {
     entryPaths: string[];
@@ -275,6 +201,7 @@ export async function startDirectoryExport(
     activeJob = { jobId, worker, callbacks };
     worker.onmessage = handleWorkerMessage;
     worker.onerror = (err) => {
+      console.error('[PDF Export] Worker error:', err);
       callbacks.onStateChange({
         status: 'failed',
         jobId,

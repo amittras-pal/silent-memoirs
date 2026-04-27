@@ -4,7 +4,7 @@
 // =============================================================
 
 import { decrypt_with_x25519 } from '@kanru/rage-wasm';
-import { renderSingleEntryPdf, renderDirectoryPdf } from '../lib/export/pdfRenderer';
+import { renderDirectoryPdf } from '../lib/export/pdfRenderer';
 import type { ExportEntryData, TitlePageData } from '../lib/export/pdfRenderer';
 import type {
   MainToWorkerMessage,
@@ -19,6 +19,12 @@ import { resolveEntryTitle } from '../lib/entryTitle';
 
 // Google Drive API base for file downloads
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
+
+// Cache resolved Google Drive folder/file IDs to avoid redundant API lookups.
+// Keyed by accumulated path prefix, e.g. "silent-memoirs" → driveId,
+// "silent-memoirs/2025" → driveId, "silent-memoirs/2025/media" → driveId.
+// Cleared after each export job completes.
+const pathIdCache = new Map<string, string>();
 
 let abortController: AbortController | null = null;
 let activeJobId: string | null = null;
@@ -68,15 +74,24 @@ async function driveDownloadFile(
   accessToken: string,
   signal: AbortSignal,
 ): Promise<Uint8Array | null> {
-  // We need to resolve the file path to a file ID first.
-  // The storage module on main thread uses a path-based resolution.
-  // Here we replicate a simplified version using the Drive API search.
   const rootFolderName = 'silent-memoirs';
   const fullPath = `${rootFolderName}/${path}`;
   const segments = fullPath.split('/').filter(Boolean);
 
+  // Resolve each path segment to a Drive file ID, using the cache
+  // for segments that have already been resolved in this export job.
   let parentId = 'root';
+  let accumulatedPath = '';
+
   for (const segment of segments) {
+    accumulatedPath = accumulatedPath ? `${accumulatedPath}/${segment}` : segment;
+
+    const cached = pathIdCache.get(accumulatedPath);
+    if (cached) {
+      parentId = cached;
+      continue;
+    }
+
     const q = `name='${segment}' and '${parentId}' in parents and trashed=false`;
     const searchUrl = `${DRIVE_API}/files?q=${encodeURIComponent(q)}&fields=files(id)`;
     const res = await fetch(searchUrl, {
@@ -87,6 +102,7 @@ async function driveDownloadFile(
     const data = await res.json();
     if (!data.files || data.files.length === 0) return null;
     parentId = data.files[0].id;
+    pathIdCache.set(accumulatedPath, parentId);
   }
 
   // Download the file content
@@ -98,6 +114,30 @@ async function driveDownloadFile(
   if (!res.ok) return null;
   const buffer = await res.arrayBuffer();
   return new Uint8Array(buffer);
+}
+
+// --- Concurrency helper ---
+
+const DOWNLOAD_CONCURRENCY = 3;
+
+async function parallelMap<T, R>(
+  items: T[],
+  fn: (item: T, index: number) => Promise<R>,
+  concurrency: number,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const i = nextIndex++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
 }
 
 async function decryptEntry(
@@ -136,55 +176,7 @@ async function decryptImage(
   }
 }
 
-// --- Export pipelines ---
-
-async function handleSingleExport(msg: MainToWorkerMessage & { type: 'START_EXPORT_SINGLE' }): Promise<void> {
-  const { jobId, entryTitle, entryContent, entryDate, entryPath, mediaPaths, secretKey, accessToken, fonts, userName } = msg;
-
-  try {
-    postProgress(jobId, 5, 'preparing', 'Preparing export…');
-    checkAborted(jobId);
-
-    // Download and decrypt images
-    const images = new Map<string, Uint8Array>();
-    const warnings: string[] = [];
-
-    for (let i = 0; i < mediaPaths.length; i++) {
-      checkAborted(jobId);
-      const mediaPath = mediaPaths[i];
-      const pct = 5 + Math.round((i / Math.max(mediaPaths.length, 1)) * 50);
-      postProgress(jobId, pct, 'downloading', `Downloading image ${i + 1}/${mediaPaths.length}…`);
-
-      const bytes = await decryptImage(mediaPath, secretKey, accessToken, abortController!.signal);
-      if (bytes) {
-        images.set(mediaPath, bytes);
-      } else {
-        warnings.push(`Could not export image: ${mediaPath}`);
-      }
-    }
-
-    postProgress(jobId, 60, 'rendering', 'Rendering PDF…');
-    checkAborted(jobId);
-
-    const entry: ExportEntryData = { title: resolveEntryTitle(entryTitle, entryDate), date: entryDate, content: entryContent };
-    const result = await renderSingleEntryPdf(entry, fonts, images, userName);
-
-    postProgress(jobId, 95, 'finalizing', 'Finalizing…');
-    checkAborted(jobId);
-
-    // Derive filename
-    const baseName = entryPath.split('/').pop()?.replace(/\.age$/, '') ?? 'entry';
-    const filename = `${baseName}.pdf`;
-
-    postCompleted(jobId, result.pdfBytes, filename, [...warnings, ...result.warnings]);
-  } catch (err) {
-    if (err instanceof AbortError) {
-      postCancelled(jobId);
-    } else {
-      postFailed(jobId, err instanceof Error ? err.message : String(err), 'rendering', entryPath);
-    }
-  }
-}
+// --- Export pipeline ---
 
 async function handleDirectoryExport(msg: MainToWorkerMessage & { type: 'START_EXPORT_DIRECTORY' }): Promise<void> {
   const { jobId, entryPaths, year, secretKey, accessToken, fonts, userName, profilePictureBytes, logoBytes } = msg;
@@ -193,45 +185,71 @@ async function handleDirectoryExport(msg: MainToWorkerMessage & { type: 'START_E
     postProgress(jobId, 2, 'preparing', 'Preparing directory export…');
     checkAborted(jobId);
 
-    const entries: ExportEntryData[] = [];
-    const allImages = new Map<string, Uint8Array>();
     const warnings: string[] = [];
     const totalEntries = entryPaths.length;
 
-    // Download and decrypt each entry + its media
-    for (let i = 0; i < totalEntries; i++) {
+    // --- Phase 1: Download and decrypt all entries in parallel ---
+    postProgress(jobId, 5, 'downloading', `Downloading ${totalEntries} entries…`);
+
+    interface EntryResult {
+      entry: ExportEntryData;
+      mediaPaths: string[];
+    }
+
+    const entryResults = await parallelMap(entryPaths, async (path, i) => {
       checkAborted(jobId);
-      const path = entryPaths[i];
-      const entryPct = 5 + Math.round((i / Math.max(totalEntries, 1)) * 60);
-      postProgress(jobId, entryPct, 'downloading', `Downloading entry ${i + 1}/${totalEntries}…`);
+      const pct = 5 + Math.round(((i + 1) / totalEntries) * 35);
+      postProgress(jobId, pct, 'downloading', `Downloading entry ${i + 1}/${totalEntries}…`);
 
       const entry = await decryptEntry(path, secretKey, accessToken, abortController!.signal);
       if (!entry) {
         warnings.push(`Could not decrypt entry: ${path}`);
-        continue;
+        return null;
       }
 
-      entries.push({
-        title: resolveEntryTitle(entry.title, entry.date),
-        date: entry.date,
-        content: entry.plaintext,
-      });
+      return {
+        entry: {
+          title: resolveEntryTitle(entry.title, entry.date),
+          date: entry.date,
+          content: entry.plaintext,
+        },
+        mediaPaths: extractEncryptedMediaPaths(entry.plaintext),
+      } satisfies EntryResult;
+    }, DOWNLOAD_CONCURRENCY);
 
-      // Extract and download media for this entry
-      const mediaPaths = extractEncryptedMediaPaths(entry.plaintext);
-      for (let j = 0; j < mediaPaths.length; j++) {
+    checkAborted(jobId);
+
+    // Collect entries and deduplicate all media paths
+    const entries: ExportEntryData[] = [];
+    const uniqueMediaPaths = new Set<string>();
+
+    for (const result of entryResults) {
+      if (!result) continue;
+      entries.push(result.entry);
+      for (const mp of result.mediaPaths) {
+        uniqueMediaPaths.add(mp);
+      }
+    }
+
+    // --- Phase 2: Download and decrypt all images in parallel ---
+    const allImages = new Map<string, Uint8Array>();
+    const mediaPathList = [...uniqueMediaPaths];
+
+    if (mediaPathList.length > 0) {
+      postProgress(jobId, 40, 'downloading', `Downloading ${mediaPathList.length} image(s)…`);
+
+      await parallelMap(mediaPathList, async (mediaPath, i) => {
         checkAborted(jobId);
-        const mediaPath = mediaPaths[j];
-        if (allImages.has(mediaPath)) continue; // skip duplicates
+        const pct = 40 + Math.round(((i + 1) / mediaPathList.length) * 25);
+        postProgress(jobId, pct, 'downloading', `Downloading image ${i + 1}/${mediaPathList.length}…`);
 
-        postProgress(jobId, entryPct, 'decrypting', `Decrypting image ${j + 1} for entry ${i + 1}…`);
         const bytes = await decryptImage(mediaPath, secretKey, accessToken, abortController!.signal);
         if (bytes) {
           allImages.set(mediaPath, bytes);
         } else {
           warnings.push(`Could not export image: ${mediaPath}`);
         }
-      }
+      }, DOWNLOAD_CONCURRENCY);
     }
 
     // Sort entries oldest to newest (January → December)
@@ -265,11 +283,18 @@ async function handleDirectoryExport(msg: MainToWorkerMessage & { type: 'START_E
 
 // --- Message handler ---
 
+self.addEventListener('error', (e) => {
+  console.error('[PDF Worker] Uncaught error:', e.error ?? e.message ?? e);
+});
+
+self.addEventListener('unhandledrejection', (e) => {
+  console.error('[PDF Worker] Unhandled rejection:', e.reason);
+});
+
 self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
   const msg = event.data;
 
   switch (msg.type) {
-    case 'START_EXPORT_SINGLE':
     case 'START_EXPORT_DIRECTORY': {
       // Single-flight: only one export at a time
       if (activeJobId) {
@@ -279,13 +304,10 @@ self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
       activeJobId = msg.jobId;
       abortController = new AbortController();
 
-      const promise = msg.type === 'START_EXPORT_SINGLE'
-        ? handleSingleExport(msg as MainToWorkerMessage & { type: 'START_EXPORT_SINGLE' })
-        : handleDirectoryExport(msg as MainToWorkerMessage & { type: 'START_EXPORT_DIRECTORY' });
-
-      promise.finally(() => {
+      handleDirectoryExport(msg).finally(() => {
         activeJobId = null;
         abortController = null;
+        pathIdCache.clear();
       });
       break;
     }

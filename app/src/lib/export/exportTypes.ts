@@ -5,7 +5,7 @@
 
 // --- Job types ---
 
-export type ExportJobType = 'single' | 'directory';
+export type ExportJobType = 'directory';
 
 export type ExportStage =
   | 'preparing'
@@ -18,26 +18,6 @@ export type ExportStage =
 export type ExportStatus = 'idle' | 'running' | 'done' | 'failed';
 
 // --- Main → Worker messages ---
-
-export interface StartExportSingleMessage {
-  type: 'START_EXPORT_SINGLE';
-  jobId: string;
-  /** Pre-decrypted entry content */
-  entryTitle: string;
-  entryContent: string;
-  entryDate: string;
-  entryPath: string;
-  /** Media image paths referenced in markdown */
-  mediaPaths: string[];
-  /** Vault secret key for decrypting media */
-  secretKey: string;
-  /** OAuth bearer token for Google Drive fetch */
-  accessToken: string;
-  /** Font file bytes (ArrayBuffer) keyed by font name */
-  fonts: Record<string, ArrayBuffer>;
-  /** User profile info for title page */
-  userName: string;
-}
 
 export interface StartExportDirectoryMessage {
   type: 'START_EXPORT_DIRECTORY';
@@ -66,7 +46,6 @@ export interface CancelExportMessage {
 }
 
 export type MainToWorkerMessage =
-  | StartExportSingleMessage
   | StartExportDirectoryMessage
   | CancelExportMessage;
 
