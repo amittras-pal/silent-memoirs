@@ -1,14 +1,14 @@
 .md-viewer {
     font-family: "EB Garamond", serif;
     font-weight: 400;
-    font-size: 16px;
+    font-size: var(--viewer-font-size, 16px);
     line-height: 1.5;
 }
 
 .md-viewer code.code-highlight {
     font-family: "Fira Code", monospace;
     font-weight: 400;
-    font-size: 12px;
+    font-size: calc(var(--viewer-font-size, 16px) * 0.75);
     line-height: 1.5;
 }
 
