@@ -1,12 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
 import { Center, Loader } from '@mantine/core';
+import { useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
-import { useAppContext } from '../../contexts/AppContext';
-import { ROUTES, decodeEntryPath } from '../../lib/routes';
 import { Viewer } from '../../components/Viewer';
+import { useAppContext } from '../../contexts/AppContext';
 import { resolveEntryTitle } from '../../lib/entryTitle';
-import type { GoogleDriveStorage } from '../../lib/storage';
+import { ROUTES, decodeEntryPath } from '../../lib/routes';
 
 export default function ViewerModule() {
   const {
