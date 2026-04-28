@@ -1,5 +1,5 @@
-import { ActionIcon, Box, Breadcrumbs, Button, Card, Center, Group, Loader, Modal, SimpleGrid, Stack, Text, Title } from '@mantine/core';
-import { IconChevronLeft, IconChevronRight, IconFileText, IconFolder, IconPhoto } from '@tabler/icons-react';
+import { ActionIcon, Box, Breadcrumbs, Button, Card, Center, Group, Loader, Modal, SimpleGrid, Stack, Text, Title, Tooltip } from '@mantine/core';
+import { IconChevronLeft, IconChevronRight, IconFileExport, IconFileText, IconFolder, IconPhoto } from '@tabler/icons-react';
 import { useEffect, useRef, useState } from 'react';
 import { resolveEntryTitle } from '../lib/entryTitle';
 import type { StorageProvider } from '../lib/storage';
@@ -16,6 +16,8 @@ interface EntriesListProps {
   secretKey: string;
   onOpenFolder: (path: string) => void;
   onOpenEntry: (path: string) => void;
+  onExportDirectory?: (directoryPath: string) => void;
+  isExportRunning?: boolean;
 }
 
 interface LazyMediaThumbnailProps {
@@ -108,11 +110,14 @@ export function EntriesList({
   secretKey,
   onOpenFolder,
   onOpenEntry,
+  onExportDirectory,
+  isExportRunning,
 }: EntriesListProps) {
   const crumbs = buildBreadcrumb(currentPath);
   const [activeMediaIndex, setActiveMediaIndex] = useState<number | null>(null);
 
   const isMediaDirectory = /(^|\/)media$/.test(currentPath);
+  const isYearDirectory = /^\d{4}$/.test(currentPath);
   const activeMedia = activeMediaIndex === null ? null : media[activeMediaIndex] ?? null;
 
   useEffect(() => {
@@ -218,9 +223,24 @@ export function EntriesList({
                     style={{ cursor: 'pointer' }}
                   >
                     <Stack gap={4}>
-                      <Group gap="xs" wrap="nowrap">
-                        <IconFolder size={16} />
-                        <Text fw={700} lineClamp={1}>{folder.name}</Text>
+                      <Group gap="xs" wrap="nowrap" justify="space-between">
+                        <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
+                          <IconFolder size={16} />
+                          <Text fw={700} lineClamp={1}>{folder.name}</Text>
+                        </Group>
+                        {onExportDirectory && /^\d{4}$/.test(folder.name) && (
+                          <Tooltip label={`Export ${folder.name} as PDF`} withArrow>
+                            <ActionIcon
+                              size="sm"
+                              variant="subtle"
+                              color="gray"
+                              disabled={isExportRunning}
+                              onClick={(e) => { e.stopPropagation(); onExportDirectory(folder.path); }}
+                            >
+                              <IconFileExport size={14} stroke={1.5} />
+                            </ActionIcon>
+                          </Tooltip>
+                        )}
                       </Group>
                       <Text size="xs" c="dimmed" lineClamp={1}>
                         {folder.entryCount} entries
@@ -262,7 +282,21 @@ export function EntriesList({
 
           {entries.length > 0 && (
             <>
-              <Text size="xs" fw={700} c="dimmed">ENTRIES</Text>
+              <Group justify="space-between" align="center">
+                <Text size="xs" fw={700} c="dimmed">ENTRIES</Text>
+                {isYearDirectory && onExportDirectory && (
+                  <Tooltip label={`Export ${currentPath} journal as PDF`} withArrow>
+                    <ActionIcon
+                      size="sm"
+                      variant="light"
+                      disabled={isExportRunning}
+                      onClick={() => onExportDirectory(currentPath)}
+                    >
+                      <IconFileExport size={14} stroke={1.5} />
+                    </ActionIcon>
+                  </Tooltip>
+                )}
+              </Group>
               <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }}>
                 {entries.map((entry) => (
                   <Card

@@ -34,7 +34,10 @@ import logoDark from '../assets/logo-dark.svg';
 import logoLight from '../assets/logo-light.svg';
 
 import { useAppContext } from '../contexts/AppContext';
+import { IDLE_EXPORT_STATE } from '../lib/export/exportTypes';
+import { cancelExport } from '../lib/export/pdfExport';
 import { ROUTES } from '../lib/routes';
+import { ExportProgressIndicator } from './ExportProgressIndicator';
 import { SessionTimerWidget } from './SessionTimerWidget';
 
 export function ProtectedLayout() {
@@ -50,6 +53,9 @@ export function ProtectedLayout() {
     confirmDiscardChanges,
     discardStagedForEntry,
     userProfile,
+    exportJobState,
+    setExportJobState,
+    isExportRunning,
   } = useAppContext();
 
   const [opened, { toggle, close }] = useDisclosure();
@@ -161,7 +167,7 @@ export function ProtectedLayout() {
                   color="red"
                   leftSection={<IconLogout size={16} stroke={1.7} />}
                   onClick={openLogoutModal}
-                  disabled={isSaving}
+                  disabled={isSaving || isExportRunning}
                 >
                   Logout
                 </Menu.Item>
@@ -251,7 +257,9 @@ export function ProtectedLayout() {
         <Text size="sm" mb="lg">
           {isDirty
             ? 'You have unsaved changes. If you log out now, your unsaved text and staged media will be lost. Are you sure you want to disconnect?'
-            : 'Are you sure you want to log out and disconnect your session?'}
+            : isExportRunning
+              ? 'A PDF export is currently in progress. Logging out will cancel the export. Are you sure you want to disconnect?'
+              : 'Are you sure you want to log out and disconnect your session?'}
         </Text>
 
         <Group justify="flex-end">
@@ -266,6 +274,12 @@ export function ProtectedLayout() {
           </Button>
         </Group>
       </Modal>
+
+      <ExportProgressIndicator
+        state={exportJobState}
+        onCancel={cancelExport}
+        onDismiss={() => setExportJobState(IDLE_EXPORT_STATE)}
+      />
     </AppShell>
   );
 }
