@@ -1,6 +1,8 @@
 import { ActionIcon, Box, Breadcrumbs, Button, Card, Center, Group, Loader, Modal, SimpleGrid, Stack, Text, Title, Tooltip } from '@mantine/core';
+import { Month } from '@mantine/dates';
 import { IconChevronLeft, IconChevronRight, IconFileExport, IconFileText, IconFolder, IconPhoto } from '@tabler/icons-react';
-import { useEffect, useRef, useState } from 'react';
+import dayjs from 'dayjs';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { resolveEntryTitle } from '../lib/entryTitle';
 import type { StorageProvider } from '../lib/storage';
 import type { EntryDirectory, EntryMetadata, MediaFileMetadata } from '../lib/sync';
@@ -115,9 +117,48 @@ export function EntriesList({
 }: EntriesListProps) {
   const crumbs = buildBreadcrumb(currentPath);
   const [activeMediaIndex, setActiveMediaIndex] = useState<number | null>(null);
+  const [selectedDateStr, setSelectedDateStr] = useState<string | null>(null);
+
+  const entriesByDate = useMemo(() => {
+    const grouped: Record<string, EntryMetadata[]> = {};
+    for (const entry of entries) {
+      const dayKey = entry.date.split('_')[0];
+      if (!grouped[dayKey]) grouped[dayKey] = [];
+      grouped[dayKey].push(entry);
+    }
+    return grouped;
+  }, [entries]);
 
   const isMediaDirectory = /(^|\/)media$/.test(currentPath);
   const isYearDirectory = /^\d{4}$/.test(currentPath);
+
+  const monthsToRender = useMemo(() => {
+    if (entries.length === 0) {
+      if (isYearDirectory) {
+        return [new Date(parseInt(currentPath, 10), 0, 1)];
+      }
+      return [new Date()];
+    }
+
+    if (isYearDirectory) {
+      const year = parseInt(currentPath, 10);
+      const currentYear = new Date().getFullYear();
+      const lastMonth = year === currentYear ? new Date().getMonth() : 11;
+      const months = [];
+      for (let m = 0; m <= lastMonth; m++) {
+        months.push(new Date(year, m, 1));
+      }
+      return months;
+    } else {
+      const monthKeys = new Set<string>();
+      entries.forEach(e => {
+        const [y, m] = e.date.split('-');
+        if (y && m) monthKeys.add(`${y}-${m}-01`);
+      });
+      return Array.from(monthKeys).sort().map(d => new Date(d));
+    }
+  }, [currentPath, isYearDirectory, entries]);
+
   const activeMedia = activeMediaIndex === null ? null : media[activeMediaIndex] ?? null;
 
   useEffect(() => {
@@ -280,9 +321,9 @@ export function EntriesList({
             </>
           )}
 
-          {entries.length > 0 && (
+          {(entries.length > 0 || isYearDirectory) && !isMediaDirectory && (
             <>
-              <Group justify="space-between" align="center">
+              <Group justify="space-between" align="center" mb="md">
                 <Text size="xs" fw={700} c="dimmed">ENTRIES</Text>
                 {isYearDirectory && onExportDirectory && (
                   <Tooltip label={`Export ${currentPath} journal as PDF`} withArrow>
@@ -297,26 +338,92 @@ export function EntriesList({
                   </Tooltip>
                 )}
               </Group>
-              <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }}>
-                {entries.map((entry) => (
-                  <Card
-                    key={`${entry.path}-${entry.updatedAt}`}
-                    withBorder
-                    radius="md"
-                    shadow="sm"
-                    onClick={() => onOpenEntry(entry.path)}
-                    style={{ cursor: 'pointer' }}
-                  >
-                    <Stack gap="xs">
-                      <Group gap="xs" wrap="nowrap">
-                        <IconFileText size={16} />
-                        <Text fw={700} lineClamp={2}>{resolveEntryTitle(entry.title, entry.date)}</Text>
+
+              <Stack gap="xl" mb="xl">
+                  <SimpleGrid cols={{ base: 1, md: 2, lg: 3, xl: 4 }}>
+                    {monthsToRender.map((monthDate) => (
+                      <Card key={monthDate.toISOString()} withBorder radius="md" p="md" shadow="sm">
+                        <Text size="lg" fw={700} ta="center" mb="md">
+                          {dayjs(monthDate).format('MMMM YYYY')}
+                        </Text>
+                        <Month
+                          month={dayjs(monthDate).format('YYYY-MM-DD') as any}
+                          hideOutsideDates
+                          renderDay={(date) => {
+                            const dayKey = dayjs(date).format('YYYY-MM-DD');
+                            const dayEntries = entriesByDate[dayKey];
+                            const hasEntries = dayEntries && dayEntries.length > 0;
+                            const isSelected = selectedDateStr === dayKey;
+
+                            if (!hasEntries) {
+                              return <Box w="100%" h="100%" display="flex" style={{ alignItems: 'center', justifyContent: 'center' }}>{dayjs(date).date()}</Box>;
+                            }
+
+                            const tooltipLabel = dayEntries.length === 1
+                              ? resolveEntryTitle(dayEntries[0].title, dayEntries[0].date)
+                              : `${dayEntries.length} Entries`;
+
+                            return (
+                              <Tooltip label={tooltipLabel} withinPortal>
+                                <Box
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (dayEntries.length === 1) {
+                                      onOpenEntry(dayEntries[0].path);
+                                    } else {
+                                      setSelectedDateStr(dayKey);
+                                    }
+                                  }}
+                                  style={(theme) => ({
+                                    width: '100%',
+                                    height: '100%',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    backgroundColor: isSelected ? 'var(--mantine-primary-color-filled)' : theme.colors[theme.primaryColor][4],
+                                    color: isSelected ? 'var(--mantine-color-white)' : theme.colors.dark[9],
+                                    borderRadius: theme.radius.sm,
+                                    cursor: 'pointer'
+                                  })}
+                                >
+                                  {dayjs(date).date()}
+                                </Box>
+                              </Tooltip>
+                            );
+                          }}
+                        />
+                      </Card>
+                    ))}
+                  </SimpleGrid>
+                  {selectedDateStr && entriesByDate[selectedDateStr] && (
+                    <Stack gap="xs" mt="xl">
+                      <Group justify="space-between" align="center">
+                        <Text size="xs" fw={700} c="dimmed">ENTRIES FOR {dayjs(selectedDateStr).format('MMMM D, YYYY').toUpperCase()}</Text>
+                        <Button size="compact-xs" variant="subtle" onClick={() => setSelectedDateStr(null)}>Clear</Button>
                       </Group>
-                      <Text size="sm" c="dimmed">{formatDate(entry.date)}</Text>
+                      <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }}>
+                        {entriesByDate[selectedDateStr].map((entry) => (
+                          <Card
+                            key={`${entry.path}-${entry.updatedAt}`}
+                            withBorder
+                            radius="md"
+                            shadow="sm"
+                            onClick={() => onOpenEntry(entry.path)}
+                            style={{ cursor: 'pointer' }}
+                          >
+                            <Stack gap="xs">
+                              <Group gap="xs" wrap="nowrap">
+                                <IconFileText size={16} />
+                                <Text fw={700} lineClamp={2}>{resolveEntryTitle(entry.title, entry.date)}</Text>
+                              </Group>
+                              <Text size="sm" c="dimmed">{formatDate(entry.date)}</Text>
+                            </Stack>
+                          </Card>
+                        ))}
+                      </SimpleGrid>
                     </Stack>
-                  </Card>
-                ))}
-              </SimpleGrid>
+                  )}
+                </Stack>
             </>
           )}
         </Stack>
