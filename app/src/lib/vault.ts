@@ -18,6 +18,8 @@ import {
 } from './webauthnPlatform';
 
 import instructionsText from '../assets/vault-directory-instructions.txt?raw';
+import decryptVaultSh from '../assets/decrypt-vault.sh?raw';
+import decryptVaultPs1 from '../assets/Decrypt-Vault.ps1?raw';
 
 const VAULT_KEY_FILE = 'vault_key.age';
 
@@ -258,6 +260,8 @@ export class VaultManager {
 
     try {
       await this.storage.uploadFile('README-Silent-Memoirs.txt', new TextEncoder().encode(instructionsText), 'text/plain');
+      await this.storage.uploadFile('decrypt-vault.sh', new TextEncoder().encode(decryptVaultSh), 'text/plain');
+      await this.storage.uploadFile('Decrypt-Vault.ps1', new TextEncoder().encode(decryptVaultPs1), 'text/plain');
     } catch {
       throw new Error("Failed to upload vault instructions file. Vault initialization aborted.");
     }

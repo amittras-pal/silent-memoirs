@@ -35,33 +35,56 @@ LIMITATIONS:
   file will be permanently lost and skipped during repair. 
 
 -----------------------------------------------------------------------------
-3. MANUAL DECRYPTION GUIDE
+3. BULK DECRYPTION (RECOMMENDED)
 -----------------------------------------------------------------------------
-If you ever lose access to the Silent Memoirs app, you can manually decrypt
-your entries using the standard `age` encryption command-line tool.
+This vault includes scripts that can decrypt ALL your entries and media at 
+once. This is the easiest way to recover your data outside the app.
 
 REQUIREMENT: You MUST have your 128-character Recovery Key that was provided 
-to you when you initialized your vault. Without the Recovery Key, manual 
-decryption is impossible.
+to you when you initialized your vault. Without the Recovery Key, decryption
+is impossible.
 
-STEPS FOR MACOS / LINUX:
-1. Install age (e.g., `brew install age` on macOS).
-2. Save your recovery key into a text file named `identity.txt`. The file 
-   should contain only your key starting with `AGE-SECRET-KEY-`.
-3. Open Terminal and run:
-   age -d -i identity.txt "path/to/encrypted_file.age" > output.json
+PREREQUISITE: Install the `age` CLI tool on your system:
+  - macOS:   brew install age
+  - Linux:   See https://github.com/FiloSottile/age/releases
+  - Windows: Download from https://github.com/FiloSottile/age/releases
+             Extract and either add to PATH or place age.exe in this folder.
 
-STEPS FOR WINDOWS:
-1. Install age (download the Windows release from the GitHub link below).
-2. Save your recovery key into a text file named `identity.txt`. The file 
-   should contain only your key starting with `AGE-SECRET-KEY-`.
-3. Open Command Prompt or PowerShell and run:
-   age -d -i identity.txt "path\to\encrypted_file.age" > output.json
+STEPS:
+1. Create a file named `identity.txt` in this directory.
+   It should contain ONLY your recovery key starting with `AGE-SECRET-KEY-`.
 
-NOTE: The decrypted `output.json` file will contain your plaintext journal 
-entry. It is no longer encrypted, so please store it securely.
+2. Run the appropriate script for your platform:
+
+   macOS / Linux:
+     chmod +x decrypt-vault.sh
+     ./decrypt-vault.sh
+
+   Windows (PowerShell):
+     .\Decrypt-Vault.ps1
+
+3. A `decrypted/` folder will be created mirroring the vault structure:
+   - Journal entries are saved as readable Markdown (.md) files.
+   - Media files are saved with their original image format.
+
+NOTES:
+- The scripts require `age` to be installed and available.
+- On macOS/Linux, either `python3` or `jq` must be available (most systems 
+  have python3 pre-installed).
+- Failed files (corrupted or wrong key) are reported but do not stop the 
+  script from processing remaining files.
 
 -----------------------------------------------------------------------------
-4. EXTERNAL RESOURCES
+4. MANUAL DECRYPTION (SINGLE FILE)
+-----------------------------------------------------------------------------
+To decrypt a single file manually using the `age` CLI:
+
+  age -d -i identity.txt "path/to/encrypted_file.age" > output.json
+
+The output is a JSON object. Your journal text is in the "plaintext" field.
+Media files (in YYYY/media/) decrypt directly to their image format.
+
+-----------------------------------------------------------------------------
+5. EXTERNAL RESOURCES
 -----------------------------------------------------------------------------
 - Age Encryption Tool: https://github.com/FiloSottile/age
