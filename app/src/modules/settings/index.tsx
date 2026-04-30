@@ -31,7 +31,7 @@ function getSessionMethodLabel(method: string | null): string {
 }
 
 export default function SettingsModule() {
-  const { vaultManager, currentSessionAuthMethod, currentSessionAuthSlotId } = useAppContext();
+  const { vaultManager, syncEngine, currentSessionAuthMethod, currentSessionAuthSlotId, triggerManifestRepair } = useAppContext();
 
   const [deviceContext, setDeviceContext] = useState<DeviceAuthContext | null>(null);
   const [slots, setSlots] = useState<KeyringWebAuthnSlot[]>([]);
@@ -39,6 +39,7 @@ export default function SettingsModule() {
   const [platformAvailable, setPlatformAvailable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);
   const [error, setError] = useState('');
 
   const canEnroll = useMemo(() => {
@@ -97,6 +98,16 @@ export default function SettingsModule() {
       setError(message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleRebuildManifest = async () => {
+    if (!syncEngine || rebuilding) return;
+    setRebuilding(true);
+    try {
+      await triggerManifestRepair();
+    } finally {
+      setRebuilding(false);
     }
   };
 
@@ -243,6 +254,27 @@ export default function SettingsModule() {
           <Text size="sm" c="dimmed">
             Keep the recovery key offline in a safe location. Do not store it in plain text with your project files.
           </Text>
+        </Stack>
+      </Card>
+
+      <Card withBorder>
+        <Stack gap="xs">
+          <Title order={4}>Rebuild Manifest</Title>
+          <Text size="sm" c="dimmed">
+            If your entries list appears incomplete or out of sync, you can rebuild the manifest by scanning all entries in your vault. This will discard the current manifest and re-read every entry from Drive.
+          </Text>
+          <Text size="sm" c="dimmed">
+            This operation may take a while depending on the number of entries in your vault.
+          </Text>
+          <Group>
+            <Button
+              onClick={handleRebuildManifest}
+              loading={rebuilding}
+              disabled={!syncEngine}
+            >
+              Rebuild Manifest
+            </Button>
+          </Group>
         </Stack>
       </Card>
     </Stack>

@@ -499,19 +499,26 @@ export class SyncEngine {
     if (onProgress) onProgress('Scanning vault for year directories...');
     const years = await this.getYears();
     const entries: EntryMetadata[] = [];
+    const BATCH_SIZE = 6;
 
     for (const year of years) {
       if (onProgress) onProgress(`Listing entries for year ${year}...`);
       const paths = await this.getEntriesForYear(year);
 
       let processed = 0;
-      for (const path of paths) {
-        processed++;
-        if (onProgress) onProgress(`Decrypting entry: ${path} (${processed}/${paths.length})`);
-        const entry = await this.fetchEntry(path);
-        if (entry) {
-          entries.push(this.toMetadata(entry, path));
+      for (let i = 0; i < paths.length; i += BATCH_SIZE) {
+        const batch = paths.slice(i, i + BATCH_SIZE);
+        const results = await Promise.allSettled(
+          batch.map((path) => this.fetchEntry(path).then((entry) => ({ entry, path }))),
+        );
+
+        for (const result of results) {
+          processed++;
+          if (result.status === 'fulfilled' && result.value.entry) {
+            entries.push(this.toMetadata(result.value.entry, result.value.path));
+          }
         }
+        if (onProgress) onProgress(`Decrypting entries for ${year}... (${processed}/${paths.length})`);
       }
     }
 
