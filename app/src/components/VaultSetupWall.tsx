@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Button, Center, Card, Title, Text, Stack, Alert, CopyButton, PasswordInput, ScrollArea, Textarea, Select, SegmentedControl, useMantineColorScheme } from '@mantine/core';
+import { Button, Center, Card, Title, Text, Stack, Alert, CopyButton, PasswordInput, ScrollArea, Textarea, SegmentedControl, useMantineColorScheme } from '@mantine/core';
 import logoDark from '../assets/logo-dark.svg';
 import logoLight from '../assets/logo-light.svg';
-import { getDeviceAuthContext, type DeviceAuthContext } from '../lib/deviceAuth';
-import type { KeyringWebAuthnSlot } from '../lib/keyring';
 import { GoogleDriveStorage } from '../lib/storage';
 import type { VaultUnlockOutcome } from '../lib/vault';
 import { VaultManager } from '../lib/vault';
@@ -33,16 +31,12 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
   const [vaultManager] = useState(() => new VaultManager(storage));
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [unlockMode, setUnlockMode] = useState<'password' | 'recovery' | 'webauthn'>('password');
+  const [unlockMode, setUnlockMode] = useState<'password' | 'recovery'>('password');
   const [recoveryKeyInput, setRecoveryKeyInput] = useState('');
   const [resetPassword, setResetPassword] = useState('');
   const [confirmResetPassword, setConfirmResetPassword] = useState('');
   const [requiresPasswordReset, setRequiresPasswordReset] = useState(false);
   const [pendingRecoveryOutcome, setPendingRecoveryOutcome] = useState<VaultUnlockOutcome | null>(null);
-  const [deviceContext, setDeviceContext] = useState<DeviceAuthContext | null>(null);
-  const [platformWebAuthnAvailable, setPlatformWebAuthnAvailable] = useState(false);
-  const [webauthnSlots, setWebauthnSlots] = useState<KeyringWebAuthnSlot[]>([]);
-  const [selectedWebauthnSlotId, setSelectedWebauthnSlotId] = useState<string | null>(null);
 
   useEffect(() => {
     vaultManager.isVaultInitialized()
@@ -58,42 +52,9 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
 
   useEffect(() => {
     if (!isInitialized) {
-      setDeviceContext(null);
-      setPlatformWebAuthnAvailable(false);
-      setWebauthnSlots([]);
-      setSelectedWebauthnSlotId(null);
       setUnlockMode('password');
-      return;
     }
-
-    let cancelled = false;
-    const loadUnlockOptions = async () => {
-      try {
-        const context = await getDeviceAuthContext();
-        if (cancelled) return;
-
-        setDeviceContext(context);
-        const options = await vaultManager.getWebAuthnUnlockOptions(context.deviceId);
-        if (cancelled) return;
-
-        setPlatformWebAuthnAvailable(options.platformAvailable);
-        setWebauthnSlots(options.slots);
-        setSelectedWebauthnSlotId(options.recommendedSlotId);
-
-        if (options.platformAvailable && options.recommendedSlotId) {
-          setUnlockMode('webauthn');
-        }
-      } catch {
-        if (cancelled) return;
-        setUnlockMode('password');
-      }
-    };
-
-    void loadUnlockOptions();
-    return () => {
-      cancelled = true;
-    };
-  }, [isInitialized, vaultManager]);
+  }, [isInitialized]);
 
   const handleCreateVault = async () => {
     if (!password.trim()) {
@@ -209,33 +170,6 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
     }
   };
 
-  const handleWebAuthnUnlock = async () => {
-    if (!deviceContext) {
-      setError('Could not determine device context for platform authenticator unlock. Please use password or recovery key.');
-      return;
-    }
-
-    if (!selectedWebauthnSlotId) {
-      setError('No platform authenticator is selected for this device.');
-      return;
-    }
-
-    setLoading(true);
-    setError('');
-    try {
-      const unlockOutcome = await vaultManager.unlockVaultWithWebAuthn(selectedWebauthnSlotId, deviceContext.deviceId);
-      onVaultReady(vaultManager, unlockOutcome);
-    } catch (err: unknown) {
-      if (isUnauthorizedError(err)) {
-        onAuthError();
-        return;
-      }
-      setError(toErrorMessage(err));
-    } finally {
-      setLoading(false);
-    }
-  };
-
   if (isInitialized === null) {
     return (
       <Center style={{ height: '100vh' }}>
@@ -303,22 +237,18 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
               ? 'Create New Vault'
               : requiresPasswordReset
                 ? 'Set a New Vault Password'
-                : unlockMode === 'webauthn'
-                  ? 'Unlock with Device Authenticator'
-                  : unlockMode === 'recovery'
-                    ? 'Recover Vault'
-                    : 'Vault Found'}
+                : unlockMode === 'recovery'
+                  ? 'Recover Vault'
+                  : 'Vault Found'}
           </Title>
           <Text c="dimmed" ta="center" size="sm">
             {!isInitialized
               ? 'No encrypted vault was found in this Drive space yet. Create a strong password to initialize your vault.'
               : requiresPasswordReset
                 ? 'Recovery key verified. For security, you must set a new password before continuing.'
-                : unlockMode === 'webauthn'
-                  ? 'Use the registered platform authenticator for this device. You will confirm with a biometric/device prompt after you tap unlock.'
-                  : unlockMode === 'recovery'
-                    ? 'Paste your recovery key to unlock this vault and then immediately set a new password.'
-                    : 'Your encrypted vault is stored on Google Drive. Enter your vault password to unlock it.'}
+                : unlockMode === 'recovery'
+                  ? 'Paste your recovery key to unlock this vault and then immediately set a new password.'
+                  : 'Your encrypted vault is stored on Google Drive. Enter your vault password to unlock it.'}
           </Text>
 
           {error && <Alert color="red" w="100%">{error}</Alert>}
@@ -374,36 +304,6 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
             />
           )}
 
-          {isInitialized && !requiresPasswordReset && unlockMode === 'webauthn' && (
-            <>
-              {webauthnSlots.length > 1 && (
-                <Select
-                  label="Registered Device Authenticator"
-                  description="Choose which registered authenticator to use for unlock."
-                  data={webauthnSlots.map((slot) => ({
-                    value: slot.id,
-                    label: `${slot.label} · last used ${new Date(slot.lastUsedAt).toLocaleDateString()}`,
-                  }))}
-                  value={selectedWebauthnSlotId}
-                  onChange={setSelectedWebauthnSlotId}
-                  w="100%"
-                />
-              )}
-
-              {!platformWebAuthnAvailable && (
-                <Alert color="yellow" w="100%">
-                  Platform authenticator is not available in this browser/device context. Use password or recovery key.
-                </Alert>
-              )}
-
-              {platformWebAuthnAvailable && webauthnSlots.length === 0 && (
-                <Alert color="yellow" w="100%">
-                  No platform authenticator is registered for this vault yet. Unlock with password, then add one in Vault Settings.
-                </Alert>
-              )}
-            </>
-          )}
-
           {isInitialized && requiresPasswordReset && (
             <>
               <PasswordInput
@@ -434,11 +334,9 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
                 ? handleCreateVault
                 : requiresPasswordReset
                   ? handleResetPasswordAfterRecovery
-                  : unlockMode === 'webauthn'
-                    ? handleWebAuthnUnlock
-                    : unlockMode === 'recovery'
-                      ? handleRecoveryUnlock
-                      : handleUnlockVault
+                  : unlockMode === 'recovery'
+                    ? handleRecoveryUnlock
+                    : handleUnlockVault
             }
             loading={loading}
           >
@@ -446,11 +344,9 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
               ? 'Create Vault'
               : requiresPasswordReset
                 ? 'Set New Password and Continue'
-                : unlockMode === 'webauthn'
-                  ? 'Unlock with Device Authenticator'
-                  : unlockMode === 'recovery'
-                    ? 'Unlock with Recovery Key'
-                    : 'Unlock Vault'}
+                : unlockMode === 'recovery'
+                  ? 'Unlock with Recovery Key'
+                  : 'Unlock Vault'}
           </Button>
 
           {isInitialized && !requiresPasswordReset && (
@@ -461,15 +357,10 @@ export function VaultSetupWall({ storage, onVaultReady, onAuthError }: VaultSetu
               value={unlockMode}
               onChange={(value) => {
                 setError('');
-                setUnlockMode(value as 'password' | 'recovery' | 'webauthn');
+                setUnlockMode(value as 'password' | 'recovery');
               }}
               data={[
                 { label: 'Password', value: 'password' },
-                {
-                  label: 'Device Authenticator',
-                  value: 'webauthn',
-                  disabled: !platformWebAuthnAvailable || webauthnSlots.length === 0,
-                },
                 { label: 'Recovery Key', value: 'recovery' },
               ]}
             />

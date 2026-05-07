@@ -1,0 +1,463 @@
+{
+  "emotions": [
+    {
+      "id": "happy",
+      "name": "Happy",
+      "level": "core",
+      "color": "#FFA726",
+      "secondary": [
+        {
+          "id": "playful",
+          "name": "Playful",
+          "level": "secondary",
+          "parentId": "happy",
+          "color": "#FFA726",
+          "tertiary": [
+            { "id": "aroused", "name": "Aroused", "level": "tertiary", "parentId": "playful", "color": "#FFA726" },
+            { "id": "cheeky", "name": "Cheeky", "level": "tertiary", "parentId": "playful", "color": "#FFA726" },
+            { "id": "free", "name": "Free", "level": "tertiary", "parentId": "playful", "color": "#FFA726" },
+            { "id": "joyful", "name": "Joyful", "level": "tertiary", "parentId": "playful", "color": "#FFA726" }
+          ]
+        },
+        {
+          "id": "content",
+          "name": "Content",
+          "level": "secondary",
+          "parentId": "happy",
+          "color": "#FFA726",
+          "tertiary": [
+            { "id": "interested", "name": "Interested", "level": "tertiary", "parentId": "content", "color": "#FFA726" },
+            { "id": "curious", "name": "Curious", "level": "tertiary", "parentId": "content", "color": "#FFA726" },
+            { "id": "inquisitive", "name": "Inquisitive", "level": "tertiary", "parentId": "content", "color": "#FFA726" }
+          ]
+        },
+        {
+          "id": "proud",
+          "name": "Proud",
+          "level": "secondary",
+          "parentId": "happy",
+          "color": "#FFA726",
+          "tertiary": [
+            { "id": "confident", "name": "Confident", "level": "tertiary", "parentId": "proud", "color": "#FFA726" },
+            { "id": "respected", "name": "Respected", "level": "tertiary", "parentId": "proud", "color": "#FFA726" },
+            { "id": "valued", "name": "Valued", "level": "tertiary", "parentId": "proud", "color": "#FFA726" },
+            { "id": "courageous", "name": "Courageous", "level": "tertiary", "parentId": "proud", "color": "#FFA726" }
+          ]
+        },
+        {
+          "id": "accepted",
+          "name": "Accepted",
+          "level": "secondary",
+          "parentId": "happy",
+          "color": "#FFA726",
+          "tertiary": [
+            { "id": "creative", "name": "Creative", "level": "tertiary", "parentId": "accepted", "color": "#FFA726" },
+            { "id": "loving", "name": "Loving", "level": "tertiary", "parentId": "accepted", "color": "#FFA726" },
+            { "id": "thankful", "name": "Thankful", "level": "tertiary", "parentId": "accepted", "color": "#FFA726" },
+            { "id": "intimate", "name": "Intimate", "level": "tertiary", "parentId": "accepted", "color": "#FFA726" }
+          ]
+        },
+        {
+          "id": "trusted",
+          "name": "Trusted",
+          "level": "secondary",
+          "parentId": "happy",
+          "color": "#FFA726",
+          "tertiary": [
+            { "id": "sensitive", "name": "Sensitive", "level": "tertiary", "parentId": "trusted", "color": "#FFA726" },
+            { "id": "hopeful", "name": "Hopeful", "level": "tertiary", "parentId": "trusted", "color": "#FFA726" },
+            { "id": "optimistic", "name": "Optimistic", "level": "tertiary", "parentId": "trusted", "color": "#FFA726" },
+            { "id": "peaceful", "name": "Peaceful", "level": "tertiary", "parentId": "trusted", "color": "#FFA726" }
+          ]
+        },
+        {
+          "id": "powerful",
+          "name": "Powerful",
+          "level": "secondary",
+          "parentId": "happy",
+          "color": "#FFA726",
+          "tertiary": [
+            { "id": "provocative", "name": "Provocative", "level": "tertiary", "parentId": "powerful", "color": "#FFA726" },
+            { "id": "important", "name": "Important", "level": "tertiary", "parentId": "powerful", "color": "#FFA726" },
+            { "id": "faithful", "name": "Faithful", "level": "tertiary", "parentId": "powerful", "color": "#FFA726" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sad",
+      "name": "Sad",
+      "level": "core",
+      "color": "#5B9BD5",
+      "secondary": [
+        {
+          "id": "lonely",
+          "name": "Lonely",
+          "level": "secondary",
+          "parentId": "sad",
+          "color": "#5B9BD5",
+          "tertiary": [
+            { "id": "isolated", "name": "Isolated", "level": "tertiary", "parentId": "lonely", "color": "#5B9BD5" },
+            { "id": "abandoned", "name": "Abandoned", "level": "tertiary", "parentId": "lonely", "color": "#5B9BD5" }
+          ]
+        },
+        {
+          "id": "vulnerable",
+          "name": "Vulnerable",
+          "level": "secondary",
+          "parentId": "sad",
+          "color": "#5B9BD5",
+          "tertiary": [
+            { "id": "victimized", "name": "Victimized", "level": "tertiary", "parentId": "vulnerable", "color": "#5B9BD5" },
+            { "id": "fragile", "name": "Fragile", "level": "tertiary", "parentId": "vulnerable", "color": "#5B9BD5" }
+          ]
+        },
+        {
+          "id": "despair",
+          "name": "Despair",
+          "level": "secondary",
+          "parentId": "sad",
+          "color": "#5B9BD5",
+          "tertiary": [
+            { "id": "grief", "name": "Grief", "level": "tertiary", "parentId": "despair", "color": "#5B9BD5" },
+            { "id": "powerless", "name": "Powerless", "level": "tertiary", "parentId": "despair", "color": "#5B9BD5" }
+          ]
+        },
+        {
+          "id": "guilty",
+          "name": "Guilty",
+          "level": "secondary",
+          "parentId": "sad",
+          "color": "#5B9BD5",
+          "tertiary": [
+            { "id": "ashamed", "name": "Ashamed", "level": "tertiary", "parentId": "guilty", "color": "#5B9BD5" },
+            { "id": "remorseful", "name": "Remorseful", "level": "tertiary", "parentId": "guilty", "color": "#5B9BD5" }
+          ]
+        },
+        {
+          "id": "depressed",
+          "name": "Depressed",
+          "level": "secondary",
+          "parentId": "sad",
+          "color": "#5B9BD5",
+          "tertiary": [
+            { "id": "empty", "name": "Empty", "level": "tertiary", "parentId": "depressed", "color": "#5B9BD5" },
+            { "id": "inferior", "name": "Inferior", "level": "tertiary", "parentId": "depressed", "color": "#5B9BD5" },
+            { "id": "bored", "name": "Bored", "level": "tertiary", "parentId": "depressed", "color": "#5B9BD5" },
+            { "id": "apathetic", "name": "Apathetic", "level": "tertiary", "parentId": "depressed", "color": "#5B9BD5" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "angry",
+      "name": "Angry",
+      "level": "core",
+      "color": "#E74C3C",
+      "secondary": [
+        {
+          "id": "let-down",
+          "name": "Let down",
+          "level": "secondary",
+          "parentId": "angry",
+          "color": "#E74C3C",
+          "tertiary": [
+            { "id": "resentful", "name": "Resentful", "level": "tertiary", "parentId": "let-down", "color": "#E74C3C" },
+            { "id": "humiliated", "name": "Humiliated", "level": "tertiary", "parentId": "let-down", "color": "#E74C3C" }
+          ]
+        },
+        {
+          "id": "humiliated-angry",
+          "name": "Humiliated",
+          "level": "secondary",
+          "parentId": "angry",
+          "color": "#E74C3C",
+          "tertiary": [
+            { "id": "ridiculed", "name": "Ridiculed", "level": "tertiary", "parentId": "humiliated-angry", "color": "#E74C3C" },
+            { "id": "disrespected", "name": "Disrespected", "level": "tertiary", "parentId": "humiliated-angry", "color": "#E74C3C" }
+          ]
+        },
+        {
+          "id": "bitter",
+          "name": "Bitter",
+          "level": "secondary",
+          "parentId": "angry",
+          "color": "#E74C3C",
+          "tertiary": [
+            { "id": "indignant", "name": "Indignant", "level": "tertiary", "parentId": "bitter", "color": "#E74C3C" },
+            { "id": "violated", "name": "Violated", "level": "tertiary", "parentId": "bitter", "color": "#E74C3C" },
+            { "id": "furious", "name": "Furious", "level": "tertiary", "parentId": "bitter", "color": "#E74C3C" }
+          ]
+        },
+        {
+          "id": "mad",
+          "name": "Mad",
+          "level": "secondary",
+          "parentId": "angry",
+          "color": "#E74C3C",
+          "tertiary": [
+            { "id": "jealous", "name": "Jealous", "level": "tertiary", "parentId": "mad", "color": "#E74C3C" },
+            { "id": "provoked", "name": "Provoked", "level": "tertiary", "parentId": "mad", "color": "#E74C3C" },
+            { "id": "hostile", "name": "Hostile", "level": "tertiary", "parentId": "mad", "color": "#E74C3C" },
+            { "id": "infuriated", "name": "Infuriated", "level": "tertiary", "parentId": "mad", "color": "#E74C3C" }
+          ]
+        },
+        {
+          "id": "aggressive",
+          "name": "Aggressive",
+          "level": "secondary",
+          "parentId": "angry",
+          "color": "#E74C3C",
+          "tertiary": [
+            { "id": "frustrated", "name": "Frustrated", "level": "tertiary", "parentId": "aggressive", "color": "#E74C3C" },
+            { "id": "distant", "name": "Distant", "level": "tertiary", "parentId": "aggressive", "color": "#E74C3C" },
+            { "id": "critical", "name": "Critical", "level": "tertiary", "parentId": "aggressive", "color": "#E74C3C" }
+          ]
+        },
+        {
+          "id": "withdrawn",
+          "name": "Withdrawn",
+          "level": "secondary",
+          "parentId": "angry",
+          "color": "#E74C3C",
+          "tertiary": [
+            { "id": "numb", "name": "Numb", "level": "tertiary", "parentId": "withdrawn", "color": "#E74C3C" },
+            { "id": "skeptical", "name": "Skeptical", "level": "tertiary", "parentId": "withdrawn", "color": "#E74C3C" },
+            { "id": "dismissive", "name": "Dismissive", "level": "tertiary", "parentId": "withdrawn", "color": "#E74C3C" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "scared",
+      "name": "Scared",
+      "level": "core",
+      "color": "#9B59B6",
+      "secondary": [
+        {
+          "id": "helpless",
+          "name": "Helpless",
+          "level": "secondary",
+          "parentId": "scared",
+          "color": "#9B59B6",
+          "tertiary": [
+            { "id": "frightened", "name": "Frightened", "level": "tertiary", "parentId": "helpless", "color": "#9B59B6" },
+            { "id": "overwhelmed", "name": "Overwhelmed", "level": "tertiary", "parentId": "helpless", "color": "#9B59B6" }
+          ]
+        },
+        {
+          "id": "insecure",
+          "name": "Insecure",
+          "level": "secondary",
+          "parentId": "scared",
+          "color": "#9B59B6",
+          "tertiary": [
+            { "id": "inadequate", "name": "Inadequate", "level": "tertiary", "parentId": "insecure", "color": "#9B59B6" },
+            { "id": "inferior-scared", "name": "Inferior", "level": "tertiary", "parentId": "insecure", "color": "#9B59B6" }
+          ]
+        },
+        {
+          "id": "confused",
+          "name": "Confused",
+          "level": "secondary",
+          "parentId": "scared",
+          "color": "#9B59B6",
+          "tertiary": [
+            { "id": "disoriented", "name": "Disoriented", "level": "tertiary", "parentId": "confused", "color": "#9B59B6" },
+            { "id": "disillusioned", "name": "Disillusioned", "level": "tertiary", "parentId": "confused", "color": "#9B59B6" },
+            { "id": "perplexed", "name": "Perplexed", "level": "tertiary", "parentId": "confused", "color": "#9B59B6" }
+          ]
+        },
+        {
+          "id": "anxious",
+          "name": "Anxious",
+          "level": "secondary",
+          "parentId": "scared",
+          "color": "#9B59B6",
+          "tertiary": [
+            { "id": "overwhelmed-anxious", "name": "Overwhelmed", "level": "tertiary", "parentId": "anxious", "color": "#9B59B6" },
+            { "id": "worried", "name": "Worried", "level": "tertiary", "parentId": "anxious", "color": "#9B59B6" }
+          ]
+        },
+        {
+          "id": "embarrassed",
+          "name": "Embarrassed",
+          "level": "secondary",
+          "parentId": "scared",
+          "color": "#9B59B6",
+          "tertiary": [
+            { "id": "self-conscious", "name": "Self-conscious", "level": "tertiary", "parentId": "embarrassed", "color": "#9B59B6" },
+            { "id": "exposed", "name": "Exposed", "level": "tertiary", "parentId": "embarrassed", "color": "#9B59B6" }
+          ]
+        },
+        {
+          "id": "rejected",
+          "name": "Rejected",
+          "level": "secondary",
+          "parentId": "scared",
+          "color": "#9B59B6",
+          "tertiary": [
+            { "id": "excluded", "name": "Excluded", "level": "tertiary", "parentId": "rejected", "color": "#9B59B6" },
+            { "id": "persecuted", "name": "Persecuted", "level": "tertiary", "parentId": "rejected", "color": "#9B59B6" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bad",
+      "name": "Bad",
+      "level": "core",
+      "color": "#95A5A6",
+      "secondary": [
+        {
+          "id": "tired",
+          "name": "Tired",
+          "level": "secondary",
+          "parentId": "bad",
+          "color": "#95A5A6",
+          "tertiary": [
+            { "id": "sleepy", "name": "Sleepy", "level": "tertiary", "parentId": "tired", "color": "#95A5A6" },
+            { "id": "unfocused", "name": "Unfocused", "level": "tertiary", "parentId": "tired", "color": "#95A5A6" }
+          ]
+        },
+        {
+          "id": "stressed",
+          "name": "Stressed",
+          "level": "secondary",
+          "parentId": "bad",
+          "color": "#95A5A6",
+          "tertiary": [
+            { "id": "overwhelmed-stressed", "name": "Overwhelmed", "level": "tertiary", "parentId": "stressed", "color": "#95A5A6" },
+            { "id": "out-of-control", "name": "Out of Control", "level": "tertiary", "parentId": "stressed", "color": "#95A5A6" }
+          ]
+        },
+        {
+          "id": "busy",
+          "name": "Busy",
+          "level": "secondary",
+          "parentId": "bad",
+          "color": "#95A5A6",
+          "tertiary": [
+            { "id": "pressured", "name": "Pressured", "level": "tertiary", "parentId": "busy", "color": "#95A5A6" },
+            { "id": "rushed", "name": "Rushed", "level": "tertiary", "parentId": "busy", "color": "#95A5A6" }
+          ]
+        },
+        {
+          "id": "bored-bad",
+          "name": "Bored",
+          "level": "secondary",
+          "parentId": "bad",
+          "color": "#95A5A6",
+          "tertiary": [
+            { "id": "indifferent", "name": "Indifferent", "level": "tertiary", "parentId": "bored-bad", "color": "#95A5A6" },
+            { "id": "apathetic-bad", "name": "Apathetic", "level": "tertiary", "parentId": "bored-bad", "color": "#95A5A6" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "surprised",
+      "name": "Surprised",
+      "level": "core",
+      "color": "#FF9800",
+      "secondary": [
+        {
+          "id": "startled",
+          "name": "Startled",
+          "level": "secondary",
+          "parentId": "surprised",
+          "color": "#FF9800",
+          "tertiary": [
+            { "id": "shocked", "name": "Shocked", "level": "tertiary", "parentId": "startled", "color": "#FF9800" },
+            { "id": "dismayed", "name": "Dismayed", "level": "tertiary", "parentId": "startled", "color": "#FF9800" }
+          ]
+        },
+        {
+          "id": "confused-surprised",
+          "name": "Confused",
+          "level": "secondary",
+          "parentId": "surprised",
+          "color": "#FF9800",
+          "tertiary": [
+            { "id": "perplexed-surprised", "name": "Perplexed", "level": "tertiary", "parentId": "confused-surprised", "color": "#FF9800" },
+            { "id": "disillusioned-surprised", "name": "Disillusioned", "level": "tertiary", "parentId": "confused-surprised", "color": "#FF9800" }
+          ]
+        },
+        {
+          "id": "amazed",
+          "name": "Amazed",
+          "level": "secondary",
+          "parentId": "surprised",
+          "color": "#FF9800",
+          "tertiary": [
+            { "id": "astonished", "name": "Astonished", "level": "tertiary", "parentId": "amazed", "color": "#FF9800" },
+            { "id": "awe", "name": "Awe", "level": "tertiary", "parentId": "amazed", "color": "#FF9800" }
+          ]
+        },
+        {
+          "id": "excited",
+          "name": "Excited",
+          "level": "secondary",
+          "parentId": "surprised",
+          "color": "#FF9800",
+          "tertiary": [
+            { "id": "energetic", "name": "Energetic", "level": "tertiary", "parentId": "excited", "color": "#FF9800" },
+            { "id": "eager", "name": "Eager", "level": "tertiary", "parentId": "excited", "color": "#FF9800" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "disgusted",
+      "name": "Disgusted",
+      "level": "core",
+      "color": "#8BC34A",
+      "secondary": [
+        {
+          "id": "disapproving",
+          "name": "Disapproving",
+          "level": "secondary",
+          "parentId": "disgusted",
+          "color": "#8BC34A",
+          "tertiary": [
+            { "id": "judgmental", "name": "Judgmental", "level": "tertiary", "parentId": "disapproving", "color": "#8BC34A" },
+            { "id": "loathing", "name": "Loathing", "level": "tertiary", "parentId": "disapproving", "color": "#8BC34A" }
+          ]
+        },
+        {
+          "id": "disappointed",
+          "name": "Disappointed",
+          "level": "secondary",
+          "parentId": "disgusted",
+          "color": "#8BC34A",
+          "tertiary": [
+            { "id": "appalled", "name": "Appalled", "level": "tertiary", "parentId": "disappointed", "color": "#8BC34A" },
+            { "id": "revolted", "name": "Revolted", "level": "tertiary", "parentId": "disappointed", "color": "#8BC34A" }
+          ]
+        },
+        {
+          "id": "awful",
+          "name": "Awful",
+          "level": "secondary",
+          "parentId": "disgusted",
+          "color": "#8BC34A",
+          "tertiary": [
+            { "id": "nauseated", "name": "Nauseated", "level": "tertiary", "parentId": "awful", "color": "#8BC34A" },
+            { "id": "detestable", "name": "Detestable", "level": "tertiary", "parentId": "awful", "color": "#8BC34A" }
+          ]
+        },
+        {
+          "id": "repelled",
+          "name": "Repelled",
+          "level": "secondary",
+          "parentId": "disgusted",
+          "color": "#8BC34A",
+          "tertiary": [
+            { "id": "horrified", "name": "Horrified", "level": "tertiary", "parentId": "repelled", "color": "#8BC34A" },
+            { "id": "hesitant", "name": "Hesitant", "level": "tertiary", "parentId": "repelled", "color": "#8BC34A" }
+          ]
+        }
+      ]
+    }
+  ]
+}

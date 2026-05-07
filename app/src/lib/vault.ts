@@ -1,6 +1,5 @@
 import type { StorageProvider } from './storage';
 import type { AgeIdentity } from './crypto';
-import type { KeyringWebAuthnSlot } from './keyring';
 import {
   bufferToHex,
   decryptData,
@@ -10,12 +9,6 @@ import {
   wrapSecretKey,
   unwrapSecretKey,
 } from './crypto';
-import { KeyringManager } from './keyring';
-import {
-  authenticatePlatformCredentialWithPrf,
-  isPlatformWebAuthnAvailable,
-  registerPlatformCredentialWithPrf,
-} from './webauthnPlatform';
 
 import instructionsText from '../assets/vault-directory-instructions.txt?raw';
 import decryptVaultSh from '../assets/decrypt-vault.sh?raw';
@@ -23,7 +16,7 @@ import decryptVaultPs1 from '../assets/Decrypt-Vault.ps1?raw';
 
 const VAULT_KEY_FILE = 'vault_key.age';
 
-export type SessionAuthMethod = 'password' | 'recovery-key' | 'webauthn-platform';
+export type SessionAuthMethod = 'password' | 'recovery-key';
 
 export interface VaultUnlockOutcome {
   method: SessionAuthMethod;
@@ -31,76 +24,21 @@ export interface VaultUnlockOutcome {
   label: string;
 }
 
-export interface VaultWebAuthnUnlockOptions {
-  platformAvailable: boolean;
-  slots: KeyringWebAuthnSlot[];
-  recommendedSlotId: string | null;
-}
-
 export class VaultManager {
   private storage: StorageProvider;
-  private keyringManager: KeyringManager;
   private currentIdentity: AgeIdentity | null = null;
   private unlockedViaRecovery = false;
   
   constructor(storage: StorageProvider) {
     this.storage = storage;
-    this.keyringManager = new KeyringManager(storage);
   }
 
   public get identity(): AgeIdentity | null {
     return this.currentIdentity;
   }
 
-  public get keyring(): KeyringManager {
-    return this.keyringManager;
-  }
-
   public get wasUnlockedWithRecoveryKey(): boolean {
     return this.unlockedViaRecovery;
-  }
-
-  public async getWebAuthnUnlockOptions(deviceId: string): Promise<VaultWebAuthnUnlockOptions> {
-    const platformAvailable = await isPlatformWebAuthnAvailable();
-    if (!platformAvailable) {
-      return {
-        platformAvailable: false,
-        slots: [],
-        recommendedSlotId: null,
-      };
-    }
-
-    const options = await this.keyringManager.getUnlockOptionsForDevice(deviceId);
-    return {
-      platformAvailable,
-      slots: options.slots,
-      recommendedSlotId: options.recommendedSlotId,
-    };
-  }
-
-  public async getWebAuthnMethods(): Promise<KeyringWebAuthnSlot[]> {
-    const keyring = await this.keyringManager.readKeyring();
-    return keyring.webauthnSlots;
-  }
-
-  public async addWebAuthnMethod(deviceId: string, deviceLabel: string): Promise<KeyringWebAuthnSlot> {
-    if (!this.currentIdentity) {
-      throw new Error('Vault must be unlocked before adding an authentication method.');
-    }
-
-    const { credentialId, prfKeyHex } = await registerPlatformCredentialWithPrf('Silent Memoirs Secure Vault');
-    const wrappedSecretKeyBytes = await wrapSecretKey(prfKeyHex, this.currentIdentity.secretKey);
-
-    return await this.keyringManager.addWebAuthnSlot({
-      label: deviceLabel,
-      deviceId,
-      credentialId,
-      wrappedSecretKeyBytes,
-    });
-  }
-
-  public async revokeWebAuthnMethod(slotId: string): Promise<void> {
-    await this.keyringManager.removeSlot(slotId);
   }
 
   private async loadVaultPublicKey(): Promise<string> {
@@ -161,39 +99,6 @@ export class VaultManager {
       method: 'password',
       slotId: null,
       label: 'Password',
-    };
-  }
-
-  public async unlockVaultWithWebAuthn(slotId: string, deviceId: string): Promise<VaultUnlockOutcome> {
-    const slot = await this.keyringManager.getSlotById(slotId);
-    if (!slot) {
-      throw new Error('The selected platform authenticator is no longer registered for this vault.');
-    }
-
-    const wrappedSecretKey = await this.keyringManager.decodeWrappedSecretForSlot(slot.id);
-    if (!wrappedSecretKey) {
-      throw new Error('Registered authenticator data is incomplete. Reconfigure this method from Vault Settings.');
-    }
-
-    const prfKeyHex = await authenticatePlatformCredentialWithPrf(slot.credentialId);
-
-    let secretKey = '';
-    try {
-      secretKey = await unwrapSecretKey(prfKeyHex, wrappedSecretKey);
-    } catch {
-      throw new Error('Authenticator verification succeeded but vault decryption failed for this method.');
-    }
-
-    const publicKey = await this.loadVaultPublicKey();
-    this.currentIdentity = { publicKey, secretKey: secretKey.trim() };
-    this.unlockedViaRecovery = false;
-
-    await this.keyringManager.markSlotUsed(slot.id, deviceId);
-
-    return {
-      method: 'webauthn-platform',
-      slotId: slot.id,
-      label: slot.label,
     };
   }
 

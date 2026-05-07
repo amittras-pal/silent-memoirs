@@ -5,6 +5,7 @@ export const ROUTES = {
   entries: '/entries',
   viewer: '/viewer',
   settings: '/settings',
+  emotionbook: '/emotionbook',
 };
 
 function normalizePath(value: string | null | undefined): string {

@@ -13,6 +13,7 @@ const EditorModule = lazy(() => import('./modules/editor'));
 const EntriesModule = lazy(() => import('./modules/entries'));
 const ViewerModule = lazy(() => import('./modules/viewer'));
 const SettingsModule = lazy(() => import('./modules/settings'));
+const EmotionBookModule = lazy(() => import('./modules/emotionbook'));
 
 export default function App() {
   const {
@@ -27,7 +28,7 @@ export default function App() {
 
   const handleVaultReady = (manager: VaultManager, unlockOutcome: VaultUnlockOutcome) => {
     setVaultManager(manager);
-    setSessionAuthContext(unlockOutcome.method, unlockOutcome.slotId);
+    setSessionAuthContext(unlockOutcome.method);
   };
 
   return (
@@ -59,6 +60,7 @@ export default function App() {
         <Route path={ROUTES.entries} element={<EntriesModule />} />
         <Route path={ROUTES.viewer} element={<ViewerModule />} />
         <Route path={ROUTES.settings} element={<SettingsModule />} />
+        <Route path={ROUTES.emotionbook} element={<EmotionBookModule />} />
       </Route>
       <Route path="/" element={<Navigate to={ROUTES.editor} replace />} />
       <Route path="*" element={<Navigate to={ROUTES.editor} replace />} />
