@@ -28,7 +28,7 @@ export default function App() {
 
   const handleVaultReady = (manager: VaultManager, unlockOutcome: VaultUnlockOutcome) => {
     setVaultManager(manager);
-    setSessionAuthContext(unlockOutcome.method, unlockOutcome.slotId);
+    setSessionAuthContext(unlockOutcome.method);
   };
 
   return (

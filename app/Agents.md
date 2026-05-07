@@ -98,8 +98,8 @@ Remote files in Drive:
 - `vault_key.age`: secret key wrapped with passphrase encryption
 
 Unlock flow:
-- Preferred: WebAuthn PRF-derived wrapping key.
-- Fallback: password-derived key via PBKDF2 (`SHA-256`, 600000 iterations).
+- Primary: password-derived key via PBKDF2 (`SHA-256`, 600000 iterations).
+- Fallback: recovery key (raw age secret key).
 
 Critical WASM note:
 - `keygen()` returns `[SecretKey, PublicKey]` in that order.

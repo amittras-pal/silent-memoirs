@@ -34,8 +34,7 @@ interface AppContextType {
   setVaultManager: (v: VaultManager | null) => void;
   syncEngine: SyncEngine | null;
   currentSessionAuthMethod: SessionAuthMethod | null;
-  currentSessionAuthSlotId: string | null;
-  setSessionAuthContext: (method: SessionAuthMethod | null, slotId?: string | null) => void;
+  setSessionAuthContext: (method: SessionAuthMethod | null) => void;
   clearSessionAuthContext: () => void;
 
   isDirty: boolean;
@@ -99,7 +98,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [vaultManager, setVaultManager] = useState<VaultManager | null>(null);
   const [syncEngine, setSyncEngine] = useState<SyncEngine | null>(null);
   const [currentSessionAuthMethod, setCurrentSessionAuthMethod] = useState<SessionAuthMethod | null>(null);
-  const [currentSessionAuthSlotId, setCurrentSessionAuthSlotId] = useState<string | null>(null);
 
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -125,14 +123,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [exportJobState, setExportJobState] = useState<ExportJobState>(IDLE_EXPORT_STATE);
   const isExportRunning = exportJobState.status === 'running';
 
-  const setSessionAuthContext = useCallback((method: SessionAuthMethod | null, slotId: string | null = null) => {
+  const setSessionAuthContext = useCallback((method: SessionAuthMethod | null) => {
     setCurrentSessionAuthMethod(method);
-    setCurrentSessionAuthSlotId(slotId);
   }, []);
 
   const clearSessionAuthContext = useCallback(() => {
     setCurrentSessionAuthMethod(null);
-    setCurrentSessionAuthSlotId(null);
   }, []);
 
   const confirmDiscardChanges = useCallback((message: string): boolean => {
@@ -362,7 +358,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     vaultManager, setVaultManager,
     syncEngine,
     currentSessionAuthMethod,
-    currentSessionAuthSlotId,
     setSessionAuthContext,
     clearSessionAuthContext,
     isDirty, setIsDirty,
