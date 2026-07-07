@@ -81,7 +81,6 @@ export function Editor({ value, onChange, storage, vaultIdentity, entryKey, onEx
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const orchestratorRef = useRef<TextAreaCommandOrchestrator | null>(null);
 
   // Local state for blazing fast typing
   const [localValue, setLocalValue] = useState(value);
@@ -117,11 +116,7 @@ export function Editor({ value, onChange, storage, vaultIdentity, entryKey, onEx
     }, 750); // 750ms debounce
   };
 
-  useEffect(() => {
-    if (textareaRef.current) {
-      orchestratorRef.current = new TextAreaCommandOrchestrator(textareaRef.current);
-    }
-  }, []);
+
 
   useEffect(() => {
     return () => {
@@ -136,8 +131,14 @@ export function Editor({ value, onChange, storage, vaultIdentity, entryKey, onEx
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     handleKeyDown(e, 2, false);
-    if (orchestratorRef.current)
-      shortcuts(e, getCommands(), orchestratorRef.current);
+    if (textareaRef.current) {
+      const orchestrator = new TextAreaCommandOrchestrator(textareaRef.current);
+      shortcuts(e, getCommands(), orchestrator);
+      if (textareaRef.current.value !== localValue) {
+        setLocalValue(textareaRef.current.value);
+        debouncedOnChange(textareaRef.current.value);
+      }
+    }
   };
 
   const handleTextAreaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -258,8 +259,9 @@ export function Editor({ value, onChange, storage, vaultIdentity, entryKey, onEx
   };
 
   const executeCommand = (command: any) => {
-    if (orchestratorRef.current && textareaRef.current) {
-      orchestratorRef.current.executeCommand(command);
+    if (textareaRef.current) {
+      const orchestrator = new TextAreaCommandOrchestrator(textareaRef.current);
+      orchestrator.executeCommand(command);
       setLocalValue(textareaRef.current.value);
       debouncedOnChange(textareaRef.current.value);
     }
