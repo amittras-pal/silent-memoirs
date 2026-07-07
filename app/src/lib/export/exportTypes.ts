@@ -40,6 +40,17 @@ export interface StartExportDirectoryMessage {
   logoBytes: ArrayBuffer;
 }
 
+export interface StartExportSingleEntryMessage {
+  type: 'START_EXPORT_SINGLE_ENTRY';
+  jobId: string;
+  title: string;
+  date: string;
+  content: string;
+  secretKey: string;
+  accessToken: string;
+  fonts: Record<string, ArrayBuffer>;
+}
+
 export interface CancelExportMessage {
   type: 'CANCEL_EXPORT';
   jobId: string;
@@ -47,6 +58,7 @@ export interface CancelExportMessage {
 
 export type MainToWorkerMessage =
   | StartExportDirectoryMessage
+  | StartExportSingleEntryMessage
   | CancelExportMessage;
 
 // --- Worker → Main messages ---

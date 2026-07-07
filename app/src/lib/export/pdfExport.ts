@@ -7,6 +7,7 @@ import type {
   ExportJobState,
   WorkerToMainMessage,
   StartExportDirectoryMessage,
+  StartExportSingleEntryMessage,
 } from './exportTypes';
 import { IDLE_EXPORT_STATE } from './exportTypes';
 
@@ -225,6 +226,72 @@ export async function startDirectoryExport(
       userName: params.userName,
       profilePictureBytes: profilePictureBytes,
       logoBytes: logoBytes,
+    };
+
+    worker.postMessage(msg);
+  } catch (err) {
+    callbacks.onStateChange({
+      status: 'failed',
+      jobId,
+      error: err instanceof Error ? err.message : String(err),
+      stage: 'preparing',
+    });
+    cleanupJob();
+  }
+}
+
+export async function startSingleEntryExport(
+  params: {
+    title: string;
+    date: string;
+    content: string;
+    secretKey: string;
+    accessToken: string;
+  },
+  callbacks: ExportCallbacks,
+): Promise<void> {
+  if (activeJob) {
+    throw new Error('An export is already in progress');
+  }
+
+  const jobId = generateJobId();
+
+  callbacks.onStateChange({
+    status: 'running',
+    jobId,
+    jobType: 'directory',
+    percent: 0,
+    stage: 'preparing',
+    stageText: 'Loading fonts and assets…',
+  });
+
+  try {
+    const fonts = await loadFonts();
+
+    const worker = createWorker();
+
+    activeJob = { jobId, worker, callbacks };
+    worker.onmessage = handleWorkerMessage;
+    worker.onerror = (err) => {
+      console.error('[PDF Export] Worker error:', err);
+      callbacks.onStateChange({
+        status: 'failed',
+        jobId,
+        error: err.message || 'Worker error',
+        stage: 'preparing',
+      });
+      cleanupJob();
+    };
+
+    const msg: StartExportSingleEntryMessage = {
+      type: 'START_EXPORT_SINGLE_ENTRY',
+      jobId,
+      title: params.title,
+      date: params.date,
+      content: params.content,
+      secretKey: params.secretKey,
+      accessToken: params.accessToken,
+      fonts,
     };
 
     worker.postMessage(msg);

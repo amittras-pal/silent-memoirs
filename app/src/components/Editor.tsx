@@ -1,7 +1,9 @@
-import { ActionIcon, Alert, Box, Divider, Flex, Group, Menu, Switch, Tooltip, useMantineColorScheme } from '@mantine/core';
+import { ActionIcon, Alert, Box, Divider, Flex, Group, Menu, Tooltip, useMantineColorScheme } from '@mantine/core';
+import { useElementSize } from '@mantine/hooks';
 import {
   IconAlertCircle,
   IconBold,
+  IconDotsVertical,
   IconEye,
   IconH1,
   IconH2,
@@ -19,7 +21,8 @@ import {
   IconPhoto,
   IconQuote,
   IconStrikethrough,
-  IconTable
+  IconTable,
+  IconFileTypePdf
 } from '@tabler/icons-react';
 import MDEditor, { commands, getCommands, handleKeyDown, shortcuts, TextAreaCommandOrchestrator } from '@uiw/react-md-editor';
 import { notifications } from '@mantine/notifications';
@@ -47,6 +50,8 @@ interface EditorProps {
   storage: StorageProvider;
   vaultIdentity: AgeIdentity;
   entryKey: string;
+  onExportPDF?: (currentContent: string) => void;
+  isExportingPDF?: boolean;
 }
 
 
@@ -63,10 +68,16 @@ function toImageAltText(fileName: string): string {
   return stripped || 'image';
 }
 
-export function Editor({ value, onChange, storage, vaultIdentity, entryKey }: EditorProps) {
+export function Editor({ value, onChange, storage, vaultIdentity, entryKey, onExportPDF, isExportingPDF }: EditorProps) {
   const [previewMode, setPreviewMode] = useState<'edit' | 'preview'>('edit');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const { colorScheme } = useMantineColorScheme();
+
+  const { ref: headerRef, width: headerWidth } = useElementSize();
+  const width = headerWidth === 0 ? 1000 : headerWidth;
+  const showGroup3 = width > 550;
+  const showGroup2 = width > 430;
+  const hasMenu = !showGroup3 || !showGroup2;
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -290,9 +301,9 @@ export function Editor({ value, onChange, storage, vaultIdentity, entryKey }: Ed
         style={{ display: 'none' }}
       />
 
-      <Box p="xs" style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }}>
+      <Box p="xs" style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }} ref={headerRef}>
         <Group justify="space-between" wrap="nowrap">
-          <Group gap={4} wrap="wrap">
+          <Group gap={4} wrap="nowrap">
             {toolbarButton(<IconBold size={18} stroke={1.5} />, 'Bold', commands.bold)}
             {toolbarButton(<IconItalic size={18} stroke={1.5} />, 'Italic', commands.italic)}
             {toolbarButton(<IconStrikethrough size={18} stroke={1.5} />, 'Strikethrough', commands.strikethrough)}
@@ -313,36 +324,74 @@ export function Editor({ value, onChange, storage, vaultIdentity, entryKey }: Ed
               </Menu.Dropdown>
             </Menu>
 
-            <Divider orientation="vertical" />
+            {showGroup2 && (
+              <>
+                <Divider orientation="vertical" />
+                {toolbarButton(<IconLink size={18} stroke={1.5} />, 'Link', commands.link)}
+                {toolbarButton(<IconQuote size={18} stroke={1.5} />, 'Quote', commands.quote)}
+                <Tooltip label={isUploadingImage ? 'Uploading image...' : 'Image'} withArrow position="bottom" openDelay={300}>
+                  <ActionIcon
+                    variant="subtle"
+                    color="gray"
+                    onClick={handleImagePickerClick}
+                    disabled={previewMode === 'preview' || isUploadingImage}
+                  >
+                    <IconPhoto size={18} stroke={1.5} />
+                  </ActionIcon>
+                </Tooltip>
+                {toolbarButton(<IconTable size={18} stroke={1.5} />, 'Table', commands.table)}
+              </>
+            )}
 
-            {toolbarButton(<IconLink size={18} stroke={1.5} />, 'Link', commands.link)}
-            {toolbarButton(<IconQuote size={18} stroke={1.5} />, 'Quote', commands.quote)}
-            <Tooltip label={isUploadingImage ? 'Uploading image...' : 'Image'} withArrow position="bottom" openDelay={300}>
-              <ActionIcon
-                variant="subtle"
-                color="gray"
-                onClick={handleImagePickerClick}
-                disabled={previewMode === 'preview' || isUploadingImage}
-              >
-                <IconPhoto size={18} stroke={1.5} />
-              </ActionIcon>
-            </Tooltip>
-            {toolbarButton(<IconTable size={18} stroke={1.5} />, 'Table', commands.table)}
+            {showGroup3 && (
+              <>
+                <Divider orientation="vertical" />
+                {toolbarButton(<IconList size={18} stroke={1.5} />, 'Unordered List', commands.unorderedListCommand)}
+                {toolbarButton(<IconListNumbers size={18} stroke={1.5} />, 'Ordered List', commands.orderedListCommand)}
+              </>
+            )}
 
-            <Divider orientation="vertical" />
-
-            {toolbarButton(<IconList size={18} stroke={1.5} />, 'Unordered List', commands.unorderedListCommand)}
-            {toolbarButton(<IconListNumbers size={18} stroke={1.5} />, 'Ordered List', commands.orderedListCommand)}
+            {hasMenu && (
+              <>
+                <Divider orientation="vertical" />
+                <Menu shadow="md" width={200} withinPortal>
+                  <Menu.Target>
+                    <Tooltip label="More formatting" withArrow position="bottom" openDelay={300}>
+                      <ActionIcon variant="subtle" color="gray" disabled={previewMode === "preview"}>
+                        <IconDotsVertical size={18} stroke={1.5} />
+                      </ActionIcon>
+                    </Tooltip>
+                  </Menu.Target>
+                  <Menu.Dropdown>
+                    {!showGroup2 && (
+                      <>
+                        <Menu.Item leftSection={<IconLink size={14} stroke={1.5} />} onClick={() => executeCommand(commands.link)} disabled={previewMode === 'preview'}>Link</Menu.Item>
+                        <Menu.Item leftSection={<IconQuote size={14} stroke={1.5} />} onClick={() => executeCommand(commands.quote)} disabled={previewMode === 'preview'}>Quote</Menu.Item>
+                        <Menu.Item leftSection={<IconPhoto size={14} stroke={1.5} />} onClick={handleImagePickerClick} disabled={previewMode === 'preview' || isUploadingImage}>
+                          {isUploadingImage ? 'Uploading...' : 'Image'}
+                        </Menu.Item>
+                        <Menu.Item leftSection={<IconTable size={14} stroke={1.5} />} onClick={() => executeCommand(commands.table)} disabled={previewMode === 'preview'}>Table</Menu.Item>
+                        {!showGroup3 && <Menu.Divider />}
+                      </>
+                    )}
+                    {!showGroup3 && (
+                      <>
+                        <Menu.Item leftSection={<IconList size={14} stroke={1.5} />} onClick={() => executeCommand(commands.unorderedListCommand)} disabled={previewMode === 'preview'}>Unordered List</Menu.Item>
+                        <Menu.Item leftSection={<IconListNumbers size={14} stroke={1.5} />} onClick={() => executeCommand(commands.orderedListCommand)} disabled={previewMode === 'preview'}>Ordered List</Menu.Item>
+                      </>
+                    )}
+                  </Menu.Dropdown>
+                </Menu>
+              </>
+            )}
           </Group>
 
           <Group gap={4} wrap="nowrap">
-            <Switch
-              size="md"
-              checked={previewMode === "edit"}
-              onChange={(event) => setPreviewMode(event.currentTarget.checked ? 'edit' : 'preview')}
-              onLabel={<IconPencil size={12} stroke={2.5} />}
-              offLabel={<IconEye size={12} stroke={2.5} />}
-            />
+            <Tooltip label={previewMode === 'edit' ? 'Preview' : 'Edit'} withArrow position="bottom" openDelay={300}>
+              <ActionIcon variant="subtle" color="gray" onClick={() => setPreviewMode(previewMode === 'edit' ? 'preview' : 'edit')}>
+                {previewMode === 'edit' ? <IconEye size={18} stroke={1.5} /> : <IconPencil size={18} stroke={1.5} />}
+              </ActionIcon>
+            </Tooltip>
             <Tooltip label={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'} withArrow position="bottom" openDelay={300}>
               <ActionIcon variant="subtle" color="gray" onClick={() => setIsFullscreen(!isFullscreen)}>
                 {isFullscreen ? <IconMinimize size={18} stroke={1.5} /> : <IconMaximize size={18} stroke={1.5} />}
@@ -363,6 +412,16 @@ export function Editor({ value, onChange, storage, vaultIdentity, entryKey }: Ed
                 }
               >
                 <IconLetterCase size={18} stroke={1.5} />
+              </ActionIcon>
+            </Tooltip>
+            <Tooltip label="Export as PDF" withArrow position="bottom" openDelay={300}>
+              <ActionIcon
+                variant="subtle"
+                color="gray"
+                loading={isExportingPDF}
+                onClick={() => onExportPDF?.(localValue)}
+              >
+                <IconFileTypePdf size={18} stroke={1.5} />
               </ActionIcon>
             </Tooltip>
           </Group>

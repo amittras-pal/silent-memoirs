@@ -4,11 +4,12 @@
 // Pure functions — no DOM, no React, no worker messaging.
 // =============================================================
 
-import { PDFDocument, PDFFont, PDFPage, rgb, StandardFonts, PDFImage, PageSizes } from 'pdf-lib';
+import { PDFDocument, PDFFont, PDFPage, rgb, StandardFonts, PDFImage, PageSizes, PDFName, PDFNumber, PDFString, PDFRef } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
+import dayjs from 'dayjs';
 import type { Root, RootContent, PhrasingContent, TableRow, TableCell, ListItem } from 'mdast';
 
 // --- Constants ---
@@ -67,6 +68,13 @@ export interface TitlePageData {
   entryDate?: string;
 }
 
+export interface Bookmark {
+  title: string;
+  depth: number;
+  pageRef: PDFRef;
+  y: number;
+}
+
 interface RenderContext {
   doc: PDFDocument;
   fonts: PdfFonts;
@@ -74,6 +82,7 @@ interface RenderContext {
   y: number;
   images: Map<string, Uint8Array>;
   warnings: string[];
+  bookmarks: Bookmark[];
 }
 
 // --- Font loading ---
@@ -83,11 +92,12 @@ export async function embedFonts(
   fontBuffers: Record<string, ArrayBuffer>,
 ): Promise<PdfFonts> {
   doc.registerFontkit(fontkit);
-  const montserratRegular = await doc.embedFont(new Uint8Array(fontBuffers['Montserrat-Regular.ttf']));
-  const montserratBold = await doc.embedFont(new Uint8Array(fontBuffers['Montserrat-Bold.ttf']));
-  const garamondRegular = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-Regular.ttf']));
-  const garamondBold = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-Bold.ttf']));
-  const garamondItalic = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-Italic.ttf']));
+  const fontOptions = { features: { liga: false, rlig: false } };
+  const montserratRegular = await doc.embedFont(new Uint8Array(fontBuffers['Montserrat-Regular.ttf']), fontOptions);
+  const montserratBold = await doc.embedFont(new Uint8Array(fontBuffers['Montserrat-Bold.ttf']), fontOptions);
+  const garamondRegular = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-Regular.ttf']), fontOptions);
+  const garamondBold = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-Bold.ttf']), fontOptions);
+  const garamondItalic = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-Italic.ttf']), fontOptions);
   const courier = await doc.embedFont(StandardFonts.Courier);
   return { montserratRegular, montserratBold, garamondRegular, garamondBold, garamondItalic, courier };
 }
@@ -108,7 +118,7 @@ function ensureSpace(ctx: RenderContext, needed: number): void {
 // --- Text sanitization ---
 // pdf-lib uses fontkit which applies OpenType GSUB ligature substitutions,
 // producing glyphs with broken ToUnicode mappings (e.g. "fl" → "ϱ").
-// We insert ZWNJ (U+200C) between ligature-forming pairs to prevent this.
+// Ligatures are now disabled natively via font options on load.
 // We also decompose pre-existing Unicode ligature codepoints (U+FB00–06)
 // and strip characters the font cannot encode.
 
@@ -123,10 +133,6 @@ const LIGATURE_MAP: Record<string, string> = {
 };
 
 const LIGATURE_RE = /[\uFB00-\uFB06]/g;
-
-// Insert ZWNJ between common Latin ligature-forming pairs (ff, fi, fl, fj, fb).
-const LIGATURE_BREAK_RE = /f(?=[fifjlb])/gi;
-const ZWNJ = '\u200C';
 
 // Common Unicode punctuation / symbol replacements
 const UNICODE_REPLACEMENTS: [RegExp, string][] = [
@@ -144,32 +150,30 @@ function sanitizeText(text: string): string {
   // 1. Decompose any pre-existing Unicode ligature codepoints
   let result = text.replace(LIGATURE_RE, (ch) => LIGATURE_MAP[ch] ?? ch);
 
-  // 2. Break ligature-forming sequences with ZWNJ
-  result = result.replace(LIGATURE_BREAK_RE, `f${ZWNJ}`);
-
   // 3. Replace common Unicode punctuation with ASCII equivalents
   for (const [pattern, replacement] of UNICODE_REPLACEMENTS) {
     result = result.replace(pattern, replacement);
   }
 
   // 4. Strip any remaining non-encodable characters.
-  //    Keep printable ASCII, Latin-1 Supplement, and ZWNJ.
-  result = result.replace(/[^\x09\x0A\x0D\x20-\x7E\u00A0-\u00FF\u200C]/g, '?');
+  //    Keep printable ASCII and Latin-1 Supplement.
+  result = result.replace(/[^\x09\x0A\x0D\x20-\x7E\u00A0-\u00FF]/g, '?');
 
   return result;
 }
 
 // --- Text utilities ---
 
-function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: number): string[] {
+function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: number, firstLineIndent = 0): string[] {
   const words = text.split(/\s+/);
   const lines: string[] = [];
   let current = '';
 
   for (const word of words) {
     const test = current ? `${current} ${word}` : word;
+    const currentMaxWidth = lines.length === 0 ? maxWidth - firstLineIndent : maxWidth;
     const width = font.widthOfTextAtSize(test, fontSize);
-    if (width > maxWidth && current) {
+    if (width > currentMaxWidth && current) {
       lines.push(current);
       current = word;
     } else {
@@ -188,12 +192,15 @@ function drawTextLines(
   fontSize: number,
   color = COLOR_TEXT,
   xOffset = 0,
+  firstLineIndent = 0,
 ): void {
   const lineHeight = fontSize * LINE_HEIGHT_FACTOR;
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const currentIndent = i === 0 ? firstLineIndent : 0;
     ensureSpace(ctx, lineHeight);
     ctx.page.drawText(sanitizeText(line), {
-      x: MARGIN + xOffset,
+      x: MARGIN + xOffset + currentIndent,
       y: ctx.y - fontSize,
       size: fontSize,
       font,
@@ -211,9 +218,10 @@ function drawWrappedText(
   color = COLOR_TEXT,
   xOffset = 0,
   maxWidth = CONTENT_WIDTH,
+  firstLineIndent = 0,
 ): void {
-  const lines = wrapText(text, font, fontSize, maxWidth - xOffset);
-  drawTextLines(ctx, lines, font, fontSize, color, xOffset);
+  const lines = wrapText(text, font, fontSize, maxWidth - xOffset, firstLineIndent);
+  drawTextLines(ctx, lines, font, fontSize, color, xOffset, firstLineIndent);
 }
 
 // --- Inline / phrasing content extraction ---
@@ -240,6 +248,7 @@ function renderPhrasingContent(
   baseFontSize: number,
   xOffset = 0,
   maxWidth = CONTENT_WIDTH,
+  firstLineIndent = 0,
 ): void {
   // Flatten all inline nodes into a single text string so the paragraph
   // wraps naturally. pdf-lib doesn't support mixed fonts on one line, so
@@ -247,7 +256,8 @@ function renderPhrasingContent(
   // in the PDF but the text flows correctly.
   const fullText = extractText(nodes);
   if (!fullText.trim()) return;
-  drawWrappedText(ctx, fullText, ctx.fonts.garamondRegular, baseFontSize, COLOR_TEXT, xOffset, maxWidth);
+
+  drawWrappedText(ctx, fullText, ctx.fonts.garamondRegular, baseFontSize, COLOR_TEXT, xOffset, maxWidth, firstLineIndent);
 }
 
 // --- Block-level node rendering ---
@@ -480,6 +490,16 @@ async function renderNode(ctx: RenderContext, node: RootContent, xOffset = 0): P
       const fontSize = sizes[Math.min(depth - 1, sizes.length - 1)];
       const text = extractText(node.children);
       ctx.y -= 4; // spacing before heading
+      
+      ensureSpace(ctx, fontSize * LINE_HEIGHT_FACTOR);
+      
+      ctx.bookmarks.push({
+        title: text,
+        depth: depth,
+        pageRef: ctx.page.ref,
+        y: ctx.y,
+      });
+
       drawWrappedText(ctx, text, ctx.fonts.montserratBold, fontSize, COLOR_TEXT, xOffset);
       ctx.y -= 2; // spacing after heading
       break;
@@ -490,11 +510,13 @@ async function renderNode(ctx: RenderContext, node: RootContent, xOffset = 0): P
       if (hasImages) {
         // Render images and text segments separately
         let textBuf: PhrasingContent[] = [];
+        let isFirstText = true;
         for (const child of node.children) {
           if (child.type === 'image') {
             // Flush accumulated text first
             if (textBuf.length > 0) {
-              renderPhrasingContent(ctx, textBuf, FONT_SIZE_BODY, xOffset);
+              renderPhrasingContent(ctx, textBuf, FONT_SIZE_BODY, xOffset, CONTENT_WIDTH, isFirstText ? 24 : 0);
+              isFirstText = false;
               textBuf = [];
             }
             await renderImage(ctx, child.url);
@@ -504,11 +526,11 @@ async function renderNode(ctx: RenderContext, node: RootContent, xOffset = 0): P
         }
         // Flush remaining text
         if (textBuf.length > 0) {
-          renderPhrasingContent(ctx, textBuf, FONT_SIZE_BODY, xOffset);
+          renderPhrasingContent(ctx, textBuf, FONT_SIZE_BODY, xOffset, CONTENT_WIDTH, isFirstText ? 24 : 0);
         }
         ctx.y -= 8;
       } else {
-        renderPhrasingContent(ctx, node.children, FONT_SIZE_BODY, xOffset);
+        renderPhrasingContent(ctx, node.children, FONT_SIZE_BODY, xOffset, CONTENT_WIDTH, 24);
         ctx.y -= 8;
       }
       break;
@@ -650,20 +672,81 @@ async function renderDirectoryTitlePage(
 
 // --- Entry rendering ---
 
+function getOrdinal(n: number) {
+  if (n > 3 && n < 21) return 'th';
+  switch (n % 10) {
+    case 1:  return "st";
+    case 2:  return "nd";
+    case 3:  return "rd";
+    default: return "th";
+  }
+}
+
 function renderEntryHeader(ctx: RenderContext, title: string, date: string): void {
+  ctx.bookmarks.push({
+    title,
+    depth: 1,
+    pageRef: ctx.page.ref,
+    y: ctx.y,
+  });
+
   // Title
   drawWrappedText(ctx, title, ctx.fonts.montserratBold, FONT_SIZE_ENTRY_TITLE, COLOR_ENTRY_TITLE);
   ctx.y -= 2;
-  // Date/time
-  const dateDisplay = date.replace('_', ' ');
-  drawWrappedText(ctx, dateDisplay, ctx.fonts.montserratRegular, FONT_SIZE_ENTRY_TIMESTAMP, COLOR_DIMMED);
-  ctx.y -= 12;
+
+  // Date/time formatting
+  let dateDisplay = date.replace('_', ' ');
+  const match = date.match(/^(\d{4})-(\d{2})-(\d{2})[_\s](\d{2})[-:](\d{2})$/);
+  if (match) {
+    const [, y, m, d, h, min] = match;
+    const dateObj = new Date(Number(y), Number(m) - 1, Number(d), Number(h), Number(min));
+    
+    const day = dateObj.getDate();
+    const ordinal = getOrdinal(day);
+    
+    const part1 = dayjs(dateObj).format('dddd, D');
+    const part3 = dayjs(dateObj).format(' MMMM, hh:mm a');
+    
+    const font = ctx.fonts.montserratRegular;
+    const fontSize = FONT_SIZE_ENTRY_TIMESTAMP;
+    const superFontSize = fontSize * 0.65;
+    const superYOffset = fontSize * 0.4;
+    
+    ensureSpace(ctx, fontSize * LINE_HEIGHT_FACTOR);
+    
+    let currentX = MARGIN;
+    
+    ctx.page.drawText(part1, { x: currentX, y: ctx.y - fontSize, size: fontSize, font, color: COLOR_DIMMED });
+    currentX += font.widthOfTextAtSize(part1, fontSize);
+    
+    ctx.page.drawText(ordinal, { x: currentX, y: ctx.y - fontSize + superYOffset, size: superFontSize, font, color: COLOR_DIMMED });
+    currentX += font.widthOfTextAtSize(ordinal, superFontSize);
+    
+    ctx.page.drawText(part3, { x: currentX, y: ctx.y - fontSize, size: fontSize, font, color: COLOR_DIMMED });
+    
+    ctx.y -= fontSize * LINE_HEIGHT_FACTOR;
+    ctx.y -= 12;
+  } else {
+    drawWrappedText(ctx, dateDisplay, ctx.fonts.montserratRegular, FONT_SIZE_ENTRY_TIMESTAMP, COLOR_DIMMED);
+    ctx.y -= 12;
+  }
 }
 
 async function renderEntryContent(ctx: RenderContext, markdown: string): Promise<void> {
   const tree = parseMarkdown(markdown);
+  const startBookmarkIdx = ctx.bookmarks.length;
   for (const node of tree.children) {
     await renderNode(ctx, node);
+  }
+  const endBookmarkIdx = ctx.bookmarks.length;
+
+  if (startBookmarkIdx < endBookmarkIdx) {
+    const entryBookmarks = ctx.bookmarks.slice(startBookmarkIdx, endBookmarkIdx);
+    const minDepth = Math.min(...entryBookmarks.map(b => b.depth));
+    const offset = 2 - minDepth;
+    for (let i = startBookmarkIdx; i < endBookmarkIdx; i++) {
+      ctx.bookmarks[i].depth += offset;
+    }
   }
 }
 
@@ -686,6 +769,7 @@ export async function renderDirectoryPdf(
     y: PAGE_HEIGHT - MARGIN,
     images,
     warnings,
+    bookmarks: [],
   };
 
   // Remove placeholder page
@@ -701,6 +785,124 @@ export async function renderDirectoryPdf(
     await renderEntryContent(ctx, entry.content);
   }
 
+  createOutlines(doc, ctx.bookmarks);
+
   const pdfBytes = await doc.save();
   return { pdfBytes: new Uint8Array(pdfBytes), warnings };
+}
+
+export async function renderSingleEntryPdf(
+  entry: ExportEntryData,
+  fonts: Record<string, ArrayBuffer>,
+  images: Map<string, Uint8Array>,
+): Promise<{ pdfBytes: Uint8Array; warnings: string[] }> {
+  const doc = await PDFDocument.create();
+  const pdfFonts = await embedFonts(doc, fonts);
+  const warnings: string[] = [];
+
+  const ctx: RenderContext = {
+    doc,
+    fonts: pdfFonts,
+    page: doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]),
+    y: PAGE_HEIGHT - MARGIN,
+    images,
+    warnings,
+    bookmarks: [],
+  };
+
+  renderEntryHeader(ctx, entry.title, entry.date);
+  await renderEntryContent(ctx, entry.content);
+
+  createOutlines(doc, ctx.bookmarks);
+
+  const pdfBytes = await doc.save();
+  return { pdfBytes: new Uint8Array(pdfBytes), warnings };
+}
+
+function createOutlines(doc: PDFDocument, bookmarks: Bookmark[]) {
+  if (bookmarks.length === 0) return;
+
+  const outlinesDictRef = doc.context.nextRef();
+  let topLevelIndex = 1;
+
+  const items = bookmarks.map(bm => ({
+    ...bm,
+    title: bm.depth === 1 ? `${topLevelIndex++}. ${bm.title}` : bm.title,
+    ref: doc.context.nextRef(),
+    parent: null as PDFRef | null,
+    prev: null as PDFRef | null,
+    next: null as PDFRef | null,
+    first: null as PDFRef | null,
+    last: null as PDFRef | null,
+    count: 0,
+    children: [] as any[],
+  }));
+
+  const rootItems = [];
+  const stack = [];
+  
+  for (const item of items) {
+    while (stack.length > 0 && stack[stack.length - 1].depth >= item.depth) {
+      stack.pop();
+    }
+    
+    if (stack.length === 0) {
+      rootItems.push(item);
+      item.parent = outlinesDictRef;
+    } else {
+      const parent = stack[stack.length - 1];
+      parent.children.push(item);
+      item.parent = parent.ref;
+    }
+    stack.push(item);
+  }
+
+  function processChildren(nodeList: any[]) {
+    let count = 0;
+    for (let i = 0; i < nodeList.length; i++) {
+      const node = nodeList[i];
+      node.prev = i > 0 ? nodeList[i - 1].ref : null;
+      node.next = i < nodeList.length - 1 ? nodeList[i + 1].ref : null;
+      
+      if (node.children.length > 0) {
+        node.first = node.children[0].ref;
+        node.last = node.children[node.children.length - 1].ref;
+        const childrenCount = processChildren(node.children);
+        node.count = -childrenCount; // Negative means closed by default
+        count += 1 + childrenCount;
+      } else {
+        count += 1;
+      }
+    }
+    return count;
+  }
+  
+  processChildren(rootItems);
+  
+  for (const item of items) {
+    const dict: any = {
+      Title: PDFString.of(item.title),
+      Parent: item.parent,
+      Dest: [item.pageRef, PDFName.of('XYZ'), null, PDFNumber.of(Math.round(item.y + 12)), null],
+    };
+    if (item.prev) dict.Prev = item.prev;
+    if (item.next) dict.Next = item.next;
+    if (item.first) dict.First = item.first;
+    if (item.last) dict.Last = item.last;
+    if (item.count !== 0) dict.Count = PDFNumber.of(item.count);
+
+    doc.context.assign(item.ref, doc.context.obj(dict));
+  }
+
+  const outlinesDict: any = {
+    Type: PDFName.of('Outlines'),
+  };
+  if (rootItems.length > 0) {
+    outlinesDict.First = rootItems[0].ref;
+    outlinesDict.Last = rootItems[rootItems.length - 1].ref;
+    outlinesDict.Count = PDFNumber.of(rootItems.length);
+  }
+  
+  doc.context.assign(outlinesDictRef, doc.context.obj(outlinesDict));
+  doc.catalog.set(PDFName.of('Outlines'), outlinesDictRef);
 }

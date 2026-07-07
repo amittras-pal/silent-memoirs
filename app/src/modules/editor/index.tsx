@@ -25,6 +25,7 @@ import {
 } from '../../lib/stagedMedia';
 import { UnauthorizedError, type JournalEntry } from '../../lib/storage';
 import { SyncEngine } from '../../lib/sync';
+import { startSingleEntryExport } from '../../lib/export/pdfExport';
 
 function composeEditorDate(date: Date): string {
   return dayjs(date).format('YYYY-MM-DD_HH-mm');
@@ -57,6 +58,8 @@ export default function EditorModule() {
     confirmDiscardChanges,
     discardStagedForEntry,
     handleAuthFailure,
+    setExportJobState,
+    isExportRunning,
   } = useAppContext();
 
   const navigate = useNavigate();
@@ -221,6 +224,28 @@ export default function EditorModule() {
     }
   };
 
+  const handleExportPDF = async (currentContent: string) => {
+    if (!storage || !vaultManager?.identity || isExportRunning) return;
+    
+    const resolvedDate = editorDate || dayjs().format('YYYY-MM-DD_HH-mm');
+    const resolvedTitle = resolveEntryTitle(editorTitle, resolvedDate);
+
+    try {
+      await startSingleEntryExport(
+        {
+          title: resolvedTitle,
+          date: resolvedDate,
+          content: currentContent,
+          secretKey: vaultManager.identity.secretKey,
+          accessToken: (storage as any).accessToken,
+        },
+        { onStateChange: setExportJobState }
+      );
+    } catch (err) {
+      console.error('Failed to start single entry export', err);
+    }
+  };
+
   if (!activeEntryPath || !(isDraftMode || activeEntryPath === sessionEditableEntryPath)) {
     return (
       <Center style={{ flex: 1 }}>
@@ -291,6 +316,8 @@ export default function EditorModule() {
             storage={storage!}
             vaultIdentity={vaultManager.identity!}
             entryKey={activeEntryPath}
+            onExportPDF={handleExportPDF}
+            isExportingPDF={isExportRunning}
           />
         )}
       </div>

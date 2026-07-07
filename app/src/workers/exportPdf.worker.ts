@@ -4,7 +4,7 @@
 // =============================================================
 
 import { decrypt_with_x25519 } from '@kanru/rage-wasm';
-import { renderDirectoryPdf } from '../lib/export/pdfRenderer';
+import { renderDirectoryPdf, renderSingleEntryPdf } from '../lib/export/pdfRenderer';
 import type { ExportEntryData, TitlePageData } from '../lib/export/pdfRenderer';
 import type {
   MainToWorkerMessage,
@@ -14,8 +14,9 @@ import type {
   CancelledMessage,
   ExportStage,
 } from '../lib/export/exportTypes';
-import { extractEncryptedMediaPaths } from '../lib/media';
+import { extractEncryptedMediaPaths, extractPendingMediaIds } from '../lib/media';
 import { resolveEntryTitle } from '../lib/entryTitle';
+import { getStagedMediaByPendingIds } from '../lib/stagedMedia';
 
 // Google Drive API base for file downloads
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
@@ -281,6 +282,63 @@ async function handleDirectoryExport(msg: MainToWorkerMessage & { type: 'START_E
   }
 }
 
+async function handleSingleEntryExport(msg: MainToWorkerMessage & { type: 'START_EXPORT_SINGLE_ENTRY' }): Promise<void> {
+  const { jobId, title, date, content, secretKey, accessToken, fonts } = msg;
+
+  try {
+    postProgress(jobId, 10, 'preparing', 'Preparing export…');
+    checkAborted(jobId);
+
+    const warnings: string[] = [];
+    const allImages = new Map<string, Uint8Array>();
+
+    const encryptedMediaPaths = extractEncryptedMediaPaths(content);
+    if (encryptedMediaPaths.length > 0) {
+      postProgress(jobId, 30, 'downloading', `Downloading ${encryptedMediaPaths.length} image(s)…`);
+      await parallelMap(encryptedMediaPaths, async (mediaPath) => {
+        checkAborted(jobId);
+        const bytes = await decryptImage(mediaPath, secretKey, accessToken, abortController!.signal);
+        if (bytes) {
+          allImages.set(mediaPath, bytes);
+        } else {
+          warnings.push(`Could not export image: ${mediaPath}`);
+        }
+      }, DOWNLOAD_CONCURRENCY);
+    }
+
+    const pendingIds = extractPendingMediaIds(content);
+    if (pendingIds.length > 0) {
+       const recordsMap = await getStagedMediaByPendingIds(pendingIds);
+       for (const pendingId of pendingIds) {
+         const record = recordsMap.get(pendingId);
+         if (record) {
+           const arrayBuffer = await record.blob.arrayBuffer();
+           allImages.set(`pending-media://${pendingId}`, new Uint8Array(arrayBuffer));
+         } else {
+           warnings.push(`Could not export pending image: ${pendingId}`);
+         }
+       }
+    }
+
+    postProgress(jobId, 70, 'rendering', 'Rendering PDF…');
+    checkAborted(jobId);
+
+    const result = await renderSingleEntryPdf({ title, date, content }, fonts, allImages);
+
+    postProgress(jobId, 95, 'finalizing', 'Finalizing…');
+    checkAborted(jobId);
+
+    const filename = `${title || 'Entry'}.pdf`;
+    postCompleted(jobId, result.pdfBytes, filename, [...warnings, ...result.warnings]);
+  } catch (err) {
+    if (err instanceof AbortError) {
+      postCancelled(jobId);
+    } else {
+      postFailed(jobId, err instanceof Error ? err.message : String(err), 'rendering');
+    }
+  }
+}
+
 // --- Message handler ---
 
 self.addEventListener('error', (e) => {
@@ -305,6 +363,21 @@ self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
       abortController = new AbortController();
 
       handleDirectoryExport(msg).finally(() => {
+        activeJobId = null;
+        abortController = null;
+        pathIdCache.clear();
+      });
+      break;
+    }
+    case 'START_EXPORT_SINGLE_ENTRY': {
+      if (activeJobId) {
+        postFailed(msg.jobId, 'Another export is already in progress', 'preparing');
+        return;
+      }
+      activeJobId = msg.jobId;
+      abortController = new AbortController();
+
+      handleSingleEntryExport(msg).finally(() => {
         activeJobId = null;
         abortController = null;
         pathIdCache.clear();
