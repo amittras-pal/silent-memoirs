@@ -17,6 +17,13 @@ import montserratBoldUrl from '../../assets/fonts/Montserrat/static/Montserrat-B
 import garamondRegularUrl from '../../assets/fonts/EB_Garamond/static/EBGaramond-Regular.ttf?url';
 import garamondBoldUrl from '../../assets/fonts/EB_Garamond/static/EBGaramond-Bold.ttf?url';
 import garamondItalicUrl from '../../assets/fonts/EB_Garamond/static/EBGaramond-Italic.ttf?url';
+import garamondBoldItalicUrl from '../../assets/fonts/EB_Garamond/static/EBGaramond-BoldItalic.ttf?url';
+import garamondExtraBoldUrl from '../../assets/fonts/EB_Garamond/static/EBGaramond-ExtraBold.ttf?url';
+import garamondExtraBoldItalicUrl from '../../assets/fonts/EB_Garamond/static/EBGaramond-ExtraBoldItalic.ttf?url';
+import garamondMediumUrl from '../../assets/fonts/EB_Garamond/static/EBGaramond-Medium.ttf?url';
+import garamondMediumItalicUrl from '../../assets/fonts/EB_Garamond/static/EBGaramond-MediumItalic.ttf?url';
+import garamondSemiBoldUrl from '../../assets/fonts/EB_Garamond/static/EBGaramond-SemiBold.ttf?url';
+import garamondSemiBoldItalicUrl from '../../assets/fonts/EB_Garamond/static/EBGaramond-SemiBoldItalic.ttf?url';
 import logoUrl from '../../assets/logo-light-raster.png?url';
 
 // --- Types ---
@@ -48,12 +55,24 @@ async function fetchAsArrayBuffer(url: string): Promise<ArrayBuffer> {
 }
 
 async function loadFonts(): Promise<Record<string, ArrayBuffer>> {
-  const [montserratRegular, montserratBold, garamondRegular, garamondBold, garamondItalic] = await Promise.all([
+  const [
+    montserratRegular, montserratBold,
+    garamondRegular, garamondBold, garamondItalic, garamondBoldItalic,
+    garamondExtraBold, garamondExtraBoldItalic, garamondMedium,
+    garamondMediumItalic, garamondSemiBold, garamondSemiBoldItalic
+  ] = await Promise.all([
     fetchAsArrayBuffer(montserratRegularUrl),
     fetchAsArrayBuffer(montserratBoldUrl),
     fetchAsArrayBuffer(garamondRegularUrl),
     fetchAsArrayBuffer(garamondBoldUrl),
     fetchAsArrayBuffer(garamondItalicUrl),
+    fetchAsArrayBuffer(garamondBoldItalicUrl),
+    fetchAsArrayBuffer(garamondExtraBoldUrl),
+    fetchAsArrayBuffer(garamondExtraBoldItalicUrl),
+    fetchAsArrayBuffer(garamondMediumUrl),
+    fetchAsArrayBuffer(garamondMediumItalicUrl),
+    fetchAsArrayBuffer(garamondSemiBoldUrl),
+    fetchAsArrayBuffer(garamondSemiBoldItalicUrl),
   ]);
   return {
     'Montserrat-Regular.ttf': montserratRegular,
@@ -61,6 +80,13 @@ async function loadFonts(): Promise<Record<string, ArrayBuffer>> {
     'EBGaramond-Regular.ttf': garamondRegular,
     'EBGaramond-Bold.ttf': garamondBold,
     'EBGaramond-Italic.ttf': garamondItalic,
+    'EBGaramond-BoldItalic.ttf': garamondBoldItalic,
+    'EBGaramond-ExtraBold.ttf': garamondExtraBold,
+    'EBGaramond-ExtraBoldItalic.ttf': garamondExtraBoldItalic,
+    'EBGaramond-Medium.ttf': garamondMedium,
+    'EBGaramond-MediumItalic.ttf': garamondMediumItalic,
+    'EBGaramond-SemiBold.ttf': garamondSemiBold,
+    'EBGaramond-SemiBoldItalic.ttf': garamondSemiBoldItalic,
   };
 }
 

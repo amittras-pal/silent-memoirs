@@ -9,6 +9,7 @@ import fontkit from '@pdf-lib/fontkit';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
+import remarkSmartypants from 'remark-smartypants';
 import dayjs from 'dayjs';
 import type { Root, RootContent, PhrasingContent, TableRow, TableCell, ListItem } from 'mdast';
 
@@ -50,6 +51,13 @@ export interface PdfFonts {
   garamondRegular: PDFFont;
   garamondBold: PDFFont;
   garamondItalic: PDFFont;
+  garamondBoldItalic: PDFFont;
+  garamondExtraBold: PDFFont;
+  garamondExtraBoldItalic: PDFFont;
+  garamondMedium: PDFFont;
+  garamondMediumItalic: PDFFont;
+  garamondSemiBold: PDFFont;
+  garamondSemiBoldItalic: PDFFont;
   courier: PDFFont;
 }
 
@@ -98,8 +106,21 @@ export async function embedFonts(
   const garamondRegular = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-Regular.ttf']), fontOptions);
   const garamondBold = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-Bold.ttf']), fontOptions);
   const garamondItalic = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-Italic.ttf']), fontOptions);
+  const garamondBoldItalic = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-BoldItalic.ttf']), fontOptions);
+  const garamondExtraBold = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-ExtraBold.ttf']), fontOptions);
+  const garamondExtraBoldItalic = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-ExtraBoldItalic.ttf']), fontOptions);
+  const garamondMedium = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-Medium.ttf']), fontOptions);
+  const garamondMediumItalic = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-MediumItalic.ttf']), fontOptions);
+  const garamondSemiBold = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-SemiBold.ttf']), fontOptions);
+  const garamondSemiBoldItalic = await doc.embedFont(new Uint8Array(fontBuffers['EBGaramond-SemiBoldItalic.ttf']), fontOptions);
   const courier = await doc.embedFont(StandardFonts.Courier);
-  return { montserratRegular, montserratBold, garamondRegular, garamondBold, garamondItalic, courier };
+  return { 
+    montserratRegular, montserratBold, 
+    garamondRegular, garamondBold, garamondItalic, garamondBoldItalic,
+    garamondExtraBold, garamondExtraBoldItalic, garamondMedium,
+    garamondMediumItalic, garamondSemiBold, garamondSemiBoldItalic,
+    courier 
+  };
 }
 
 // --- Page management ---
@@ -136,14 +157,13 @@ const LIGATURE_RE = /[\uFB00-\uFB06]/g;
 
 // Common Unicode punctuation / symbol replacements
 const UNICODE_REPLACEMENTS: [RegExp, string][] = [
-  [/[\u2018\u2019\u201A\uFF07]/g, "'"],    // smart single quotes → '
-  [/[\u201C\u201D\u201E\uFF02]/g, '"'],    // smart double quotes → "
-  [/[\u2013\u2014]/g, '-'],                 // en/em dash → -
-  [/\u2026/g, '...'],                        // ellipsis → ...
-  [/\u00A0/g, ' '],                          // non-breaking space → space
+  [/[\uFF07]/g, "'"],                       // fullwidth single quotes → '
+  [/[\uFF02]/g, '"'],                       // fullwidth double quotes → "
+  [/\u00A0/g, ' '],                         // non-breaking space → space
   [/[\u2022\u2023\u25E6\u2043]/g, '*'],     // bullet variants → *
   [/\u00D7/g, 'x'],                         // multiplication sign → x
   [/[\u2190-\u21FF]/g, '->'],               // arrows → ->
+  [/\u22C5/g, '\u00B7'],                    // dot operator (0x22c5) → middle dot (Latin-1)
 ];
 
 function sanitizeText(text: string): string {
@@ -156,8 +176,8 @@ function sanitizeText(text: string): string {
   }
 
   // 4. Strip any remaining non-encodable characters.
-  //    Keep printable ASCII and Latin-1 Supplement.
-  result = result.replace(/[^\x09\x0A\x0D\x20-\x7E\u00A0-\u00FF]/g, '?');
+  //    Keep printable ASCII, Latin-1 Supplement, and standard typographic punctuation.
+  result = result.replace(/[^\x09\x0A\x0D\x20-\x7E\u00A0-\u00FF\u2013-\u2014\u2018-\u201E\u2022\u2026]/g, '?');
 
   return result;
 }
@@ -226,6 +246,49 @@ function drawWrappedText(
 
 // --- Inline / phrasing content extraction ---
 
+interface WordRun {
+  word: string;
+  font: PDFFont;
+  size: number;
+}
+
+function buildWordRuns(ctx: RenderContext, nodes: PhrasingContent[], baseFontSize: number, isBold = false, isItalic = false): WordRun[] {
+  const runs: WordRun[] = [];
+  
+  for (const node of nodes) {
+    if (node.type === 'text' || node.type === 'inlineCode') {
+      let font = ctx.fonts.garamondRegular;
+      let size = baseFontSize;
+      
+      if (node.type === 'inlineCode') {
+         font = ctx.fonts.courier;
+         size = FONT_SIZE_CODE;
+      } else if (isBold && isItalic) {
+         font = ctx.fonts.garamondBoldItalic;
+      } else if (isBold) {
+         font = ctx.fonts.garamondBold;
+      } else if (isItalic) {
+         font = ctx.fonts.garamondItalic;
+      }
+      
+      const value = node.value.replace(/\n/g, ' ');
+      const tokens = value.match(/(\s+|\S+)/g) || [];
+      for (const token of tokens) {
+        runs.push({ word: token, font, size });
+      }
+    } else if (node.type === 'strong') {
+      runs.push(...buildWordRuns(ctx, node.children as PhrasingContent[], baseFontSize, true, isItalic));
+    } else if (node.type === 'emphasis') {
+      runs.push(...buildWordRuns(ctx, node.children as PhrasingContent[], baseFontSize, isBold, true));
+    } else if (node.type === 'break') {
+      runs.push({ word: '\n', font: ctx.fonts.garamondRegular, size: baseFontSize });
+    } else if ('children' in node) {
+      runs.push(...buildWordRuns(ctx, node.children as PhrasingContent[], baseFontSize, isBold, isItalic));
+    }
+  }
+  return runs;
+}
+
 function extractText(nodes: PhrasingContent[]): string {
   let result = '';
   for (const node of nodes) {
@@ -250,14 +313,60 @@ function renderPhrasingContent(
   maxWidth = CONTENT_WIDTH,
   firstLineIndent = 0,
 ): void {
-  // Flatten all inline nodes into a single text string so the paragraph
-  // wraps naturally. pdf-lib doesn't support mixed fonts on one line, so
-  // we render everything with the body font.  Bold/italic markers are lost
-  // in the PDF but the text flows correctly.
-  const fullText = extractText(nodes);
-  if (!fullText.trim()) return;
+  const words = buildWordRuns(ctx, nodes, baseFontSize);
+  if (words.length === 0) return;
 
-  drawWrappedText(ctx, fullText, ctx.fonts.garamondRegular, baseFontSize, COLOR_TEXT, xOffset, maxWidth, firstLineIndent);
+  const lineHeight = baseFontSize * LINE_HEIGHT_FACTOR;
+  let currentX = MARGIN + xOffset + firstLineIndent;
+  
+  const lineStartX = MARGIN + xOffset;
+  const maxRight = MARGIN + xOffset + maxWidth;
+
+  ensureSpace(ctx, lineHeight);
+  let currentY = ctx.y - baseFontSize;
+  
+  for (const run of words) {
+    const text = sanitizeText(run.word);
+    if (!text) continue;
+
+    if (text === '\n') {
+      ctx.y -= lineHeight;
+      ensureSpace(ctx, lineHeight);
+      currentX = lineStartX;
+      currentY = ctx.y - baseFontSize;
+      continue;
+    }
+
+    const width = run.font.widthOfTextAtSize(text, run.size);
+    // Use Math.abs for float comparison safety when checking if at start of line
+    const isStartOfLine = Math.abs(currentX - lineStartX) < 0.1 || (firstLineIndent > 0 && Math.abs(currentX - (lineStartX + firstLineIndent)) < 0.1);
+
+    if (text.match(/^\s+$/)) {
+      if (!isStartOfLine) {
+        currentX += width;
+      }
+      continue;
+    }
+
+    if (currentX + width > maxRight && !isStartOfLine) {
+      ctx.y -= lineHeight;
+      ensureSpace(ctx, lineHeight);
+      currentX = lineStartX;
+      currentY = ctx.y - baseFontSize;
+    }
+
+    ctx.page.drawText(text, {
+      x: currentX,
+      y: currentY,
+      size: run.size,
+      font: run.font,
+      color: COLOR_TEXT,
+    });
+
+    currentX += width;
+  }
+  
+  ctx.y -= lineHeight;
 }
 
 // --- Block-level node rendering ---
@@ -588,8 +697,12 @@ async function renderNode(ctx: RenderContext, node: RootContent, xOffset = 0): P
 // --- Markdown parsing ---
 
 function parseMarkdown(markdown: string): Root {
-  const processor = unified().use(remarkParse).use(remarkGfm);
-  return processor.parse(markdown);
+  const processor = unified()
+    .use(remarkParse)
+    .use(remarkGfm)
+    .use(remarkSmartypants, { dashes: 'oldschool' });
+  const ast = processor.parse(markdown);
+  return processor.runSync(ast) as Root;
 }
 
 // --- Title page rendering ---
