@@ -98,18 +98,32 @@ STEPS:
 
 2. Run the appropriate script for your platform:
 
+   Windows:
+     Double-click \`Decrypt-Vault.cmd\` or run in a terminal:
+       .\\Decrypt-Vault.cmd
+
+     Alternative (PowerShell directly):
+       .\\Decrypt-Vault.ps1
+     Note: If you see an "execution policy" error, use the .cmd launcher
+     instead, or run: Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+
    macOS / Linux:
      chmod +x decrypt-vault.sh
      ./decrypt-vault.sh
 
-   Windows (PowerShell):
-     .\\Decrypt-Vault.ps1
+     Alternative (no chmod needed):
+       bash decrypt-vault.sh
+
+     macOS only: If you see a Gatekeeper warning, run first:
+       xattr -d com.apple.quarantine decrypt-vault.sh
 
 3. A \`decrypted/\` folder will be created mirroring the vault structure:
    - Journal entries are saved as readable Markdown (.md) files.
    - Media files are saved with their original image format.
 
 NOTES:
+- Decryption runs in parallel when your system supports it. No configuration
+  needed — the script automatically detects available CPU cores.
 - The scripts require \`age\` to be installed and available.
 - On macOS/Linux, either \`python3\` or \`jq\` must be available (most systems 
   have python3 pre-installed).
@@ -147,6 +161,12 @@ Media files (in YYYY/media/) decrypt directly to their image format.
 # Usage:
 #   chmod +x decrypt-vault.sh
 #   ./decrypt-vault.sh
+#
+#   Alternative (no chmod needed):
+#     bash decrypt-vault.sh
+#
+#   macOS users: If you see a Gatekeeper warning, run first:
+#     xattr -d com.apple.quarantine decrypt-vault.sh
 # =============================================================================
 
 set -euo pipefail
@@ -225,75 +245,189 @@ mkdir -p "$OUTPUT_DIR"
 echo "Output directory: $OUTPUT_DIR"
 echo ""
 
-# --- Decrypt files ------------------------------------------------------------
+# --- Detect parallelism -------------------------------------------------------
 
-ENTRIES_OK=0
-ENTRIES_FAIL=0
-MEDIA_OK=0
-MEDIA_FAIL=0
+NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
+NPROC=$((NPROC > 16 ? 16 : NPROC))
 
-# Process entry files: YYYY/YYYY-MM-DD_HH-MM.age
+# Check if xargs supports -P (parallel)
+USE_PARALLEL=false
+if echo "" | xargs -P 1 echo "" &>/dev/null 2>&1; then
+  USE_PARALLEL=true
+fi
+
+if [ "$USE_PARALLEL" = true ] && [ "$NPROC" -gt 1 ]; then
+  echo "[INFO] Using $NPROC parallel threads"
+else
+  echo "[INFO] Running sequentially"
+fi
+echo ""
+
+# --- Build work manifest ------------------------------------------------------
+
+MANIFEST_FILE=$(mktemp)
+STATUS_DIR=$(mktemp -d)
+trap 'rm -rf "$MANIFEST_FILE" "$STATUS_DIR"' EXIT
+
+TOTAL=0
+
+# Collect entry files: YYYY/*.age
 while IFS= read -r encrypted_file; do
-  rel_path="\${encrypted_file#"$VAULT_DIR/"}"
-  out_rel="\${rel_path%.age}.md"
-  out_file="$OUTPUT_DIR/$out_rel"
+  echo "entry|$encrypted_file" >> "$MANIFEST_FILE"
+  TOTAL=$((TOTAL + 1))
+done < <(find "$VAULT_DIR" -mindepth 2 -type f -name "*.age" \\
+  ! -path "*/media/*" \\
+  -path "*/[0-9][0-9][0-9][0-9]/*" | sort)
 
-  mkdir -p "$(dirname "$out_file")"
+# Collect media files: YYYY/media/*.{png,webp,jpg,jpeg,avif}
+while IFS= read -r encrypted_file; do
+  echo "media|$encrypted_file" >> "$MANIFEST_FILE"
+  TOTAL=$((TOTAL + 1))
+done < <(find "$VAULT_DIR" -mindepth 3 -type f -path "*/media/*" \\
+  \\( -iname "*.png" -o -iname "*.webp" -o -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.avif" \\) | sort)
 
-  tmp_file=$(mktemp)
-  if age -d -i "$IDENTITY_FILE" "$encrypted_file" > "$tmp_file" 2>/dev/null; then
-    extract_ok=false
+if [ "$TOTAL" -eq 0 ]; then
+  echo "No encrypted files found in vault."
+  echo ""
+  exit 0
+fi
 
-    if [ "$JSON_PARSER" = "python3" ]; then
-      if python3 -c "
+echo "Found $TOTAL files to decrypt."
+echo ""
+echo -n "Press any key to begin decryption..."
+read -rsn1
+echo ""
+echo ""
+# --- Decrypt function ---------------------------------------------------------
+
+decrypt_one() {
+  local line="$1"
+  local vault_dir="$2"
+  local identity_file="$3"
+  local output_dir="$4"
+  local json_parser="$5"
+  local status_dir="$6"
+
+  local item_type="\${line%%|*}"
+  local encrypted_file="\${line#*|}"
+  local rel_path="\${encrypted_file#"$vault_dir"/}"
+
+  # Generate a unique status file name
+  local status_file
+  status_file="$status_dir/$(echo "$rel_path" | tr '/' '_')"
+
+  if [ "$item_type" = "entry" ]; then
+    local out_rel="\${rel_path%.age}.md"
+    local out_file="$output_dir/$out_rel"
+    mkdir -p "$(dirname "$out_file")"
+
+    local tmp_file
+    tmp_file=$(mktemp)
+    if age -d -i "$identity_file" "$encrypted_file" > "$tmp_file" 2>/dev/null; then
+      local extract_ok=false
+
+      if [ "$json_parser" = "python3" ]; then
+        if python3 -c "
 import json, sys
 with open(sys.argv[1], 'r', encoding='utf-8') as f:
     data = json.load(f)
 content = data.get('plaintext', '')
 sys.stdout.write(content)
 " "$tmp_file" > "$out_file" 2>/dev/null; then
-        extract_ok=true
+          extract_ok=true
+        fi
+      else
+        if jq -r '.plaintext // ""' "$tmp_file" > "$out_file" 2>/dev/null; then
+          extract_ok=true
+        fi
       fi
-    else
-      if jq -r '.plaintext // ""' "$tmp_file" > "$out_file" 2>/dev/null; then
-        extract_ok=true
-      fi
-    fi
 
-    if [ "$extract_ok" = true ]; then
-      echo "  [ENTRY OK] $rel_path -> $out_rel"
-      ENTRIES_OK=$((ENTRIES_OK + 1))
+      if [ "$extract_ok" = true ]; then
+        echo "entry_ok" > "$status_file"
+      else
+        echo "entry_fail|$rel_path (JSON parse error)" > "$status_file"
+        rm -f "$out_file"
+      fi
     else
-      echo "  [ENTRY FAIL] $rel_path (JSON parse error)"
+      echo "entry_fail|$rel_path (decryption error)" > "$status_file"
+    fi
+    rm -f "$tmp_file"
+
+  else
+    # Media file
+    local out_file="$output_dir/$rel_path"
+    mkdir -p "$(dirname "$out_file")"
+
+    if age -d -i "$identity_file" "$encrypted_file" > "$out_file" 2>/dev/null; then
+      echo "media_ok" > "$status_file"
+    else
+      echo "media_fail|$rel_path" > "$status_file"
       rm -f "$out_file"
-      ENTRIES_FAIL=$((ENTRIES_FAIL + 1))
     fi
-  else
-    echo "  [ENTRY FAIL] $rel_path (decryption error)"
-    ENTRIES_FAIL=$((ENTRIES_FAIL + 1))
   fi
-  rm -f "$tmp_file"
-done < <(find "$VAULT_DIR" -mindepth 2 -type f -name "*.age" \\
-  ! -path "*/media/*" \\
-  -path "*/[0-9][0-9][0-9][0-9]/*" | sort)
+}
 
-# Process media files: YYYY/media/*.{png,webp,jpg,jpeg,avif}
-while IFS= read -r encrypted_file; do
-  rel_path="\${encrypted_file#"$VAULT_DIR/"}"
-  out_file="$OUTPUT_DIR/$rel_path"
+export -f decrypt_one
 
-  mkdir -p "$(dirname "$out_file")"
+# --- Progress bar function ----------------------------------------------------
 
-  if age -d -i "$IDENTITY_FILE" "$encrypted_file" > "$out_file" 2>/dev/null; then
-    echo "  [MEDIA OK] $rel_path"
-    MEDIA_OK=$((MEDIA_OK + 1))
-  else
-    echo "  [MEDIA FAIL] $rel_path"
-    rm -f "$out_file"
-    MEDIA_FAIL=$((MEDIA_FAIL + 1))
-  fi
-done < <(find "$VAULT_DIR" -mindepth 3 -type f -path "*/media/*" \\
-  \\( -iname "*.png" -o -iname "*.webp" -o -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.avif" \\) | sort)
+show_progress() {
+  local current=$1 total=$2
+  if [ "$total" -eq 0 ]; then return; fi
+  local pct=$((current * 100 / total))
+  local bar_width=40
+  local filled=$((pct * bar_width / 100))
+  local empty=$((bar_width - filled))
+  local filled_bar=""
+  local empty_bar=""
+  local i
+  for ((i = 0; i < filled; i++)); do filled_bar+="█"; done
+  for ((i = 0; i < empty; i++)); do empty_bar+="░"; done
+  printf "\\r  %s%s  %3d%%  (%d/%d)" "$filled_bar" "$empty_bar" "$pct" "$current" "$total"
+}
+
+# --- Decrypt files ------------------------------------------------------------
+
+if [ "$USE_PARALLEL" = true ] && [ "$NPROC" -gt 1 ]; then
+  # Parallel execution with xargs -P
+  # We run decrypt_one for each line in the manifest
+  cat "$MANIFEST_FILE" | xargs -P "$NPROC" -I {} bash -c \\
+    'decrypt_one "$@"' _ {} "$VAULT_DIR" "$IDENTITY_FILE" "$OUTPUT_DIR" "$JSON_PARSER" "$STATUS_DIR"
+
+  # Show final progress (100%)
+  show_progress "$TOTAL" "$TOTAL"
+  echo ""
+else
+  # Sequential execution with progress bar
+  COMPLETED=0
+  while IFS= read -r line; do
+    decrypt_one "$line" "$VAULT_DIR" "$IDENTITY_FILE" "$OUTPUT_DIR" "$JSON_PARSER" "$STATUS_DIR"
+    COMPLETED=$((COMPLETED + 1))
+    show_progress "$COMPLETED" "$TOTAL"
+  done < "$MANIFEST_FILE"
+  echo ""
+fi
+
+# --- Aggregate results --------------------------------------------------------
+
+ENTRIES_OK=0
+ENTRIES_FAIL=0
+MEDIA_OK=0
+MEDIA_FAIL=0
+FAILED_FILES=()
+
+for status_file in "$STATUS_DIR"/*; do
+  [ -f "$status_file" ] || continue
+  status=$(cat "$status_file")
+  case "$status" in
+    entry_ok)    ENTRIES_OK=$((ENTRIES_OK + 1)) ;;
+    media_ok)    MEDIA_OK=$((MEDIA_OK + 1)) ;;
+    entry_fail*) ENTRIES_FAIL=$((ENTRIES_FAIL + 1)); FAILED_FILES+=("\${status#*|}") ;;
+    media_fail*) MEDIA_FAIL=$((MEDIA_FAIL + 1)); FAILED_FILES+=("\${status#*|}") ;;
+  esac
+done
+
+# --- Summary ------------------------------------------------------------------
 
 echo ""
 echo "============================================"
@@ -305,9 +439,14 @@ echo ""
 echo "Decrypted files are in: $OUTPUT_DIR"
 echo ""
 
-if [ $ENTRIES_FAIL -gt 0 ] || [ $MEDIA_FAIL -gt 0 ]; then
-  echo "NOTE: Some files could not be decrypted. They may be corrupted"
-  echo "or your identity key may not match this vault."
+if [ \${#FAILED_FILES[@]} -gt 0 ]; then
+  echo "Failed files:"
+  for f in "\${FAILED_FILES[@]}"; do
+    echo "  [FAIL] $f"
+  done
+  echo ""
+  echo "NOTE: These files may be corrupted or your identity key"
+  echo "may not match this vault."
   exit 1
 fi
 `,Sm=`# =============================================================================
@@ -324,8 +463,18 @@ fi
 #      starting with AGE-SECRET-KEY-...
 #
 # Usage:
-#   Open PowerShell, navigate to this directory, and run:
-#   .\\Decrypt-Vault.ps1
+#   Double-click Decrypt-Vault.cmd, or run in PowerShell:
+#     .\\Decrypt-Vault.cmd
+#
+#   Alternative (PowerShell directly):
+#     .\\Decrypt-Vault.ps1
+#   Note: If you see an "execution policy" error, use the .cmd launcher
+#   instead, or run:
+#     Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+#
+# Optional: To sign this script with your own certificate:
+#   $cert = Get-ChildItem -Path Cert:\\CurrentUser\\My -CodeSigningCert
+#   Set-AuthenticodeSignature -FilePath .\\Decrypt-Vault.ps1 -Certificate $cert
 # =============================================================================
 
 $ErrorActionPreference = "Stop"
@@ -390,6 +539,17 @@ if (-not $firstLine.StartsWith("AGE-SECRET-KEY-")) {
 }
 
 Write-Host "[OK] Identity file found" -ForegroundColor Green
+
+# Check PowerShell version for parallel support
+$useParallel = $PSVersionTable.PSVersion.Major -ge 7
+if ($useParallel) {
+    $threadCount = [Environment]::ProcessorCount
+    $threadCount = [Math]::Min($threadCount, 16)
+    Write-Host "[OK] PowerShell $($PSVersionTable.PSVersion) — will use $threadCount parallel threads" -ForegroundColor Green
+} else {
+    Write-Host "[WARN] PowerShell $($PSVersionTable.PSVersion) detected. Parallel decryption requires PowerShell 7+." -ForegroundColor Yellow
+    Write-Host "       Will fall back to sequential processing. Install PS 7 for faster decryption." -ForegroundColor Yellow
+}
 Write-Host ""
 
 # --- Create output directory --------------------------------------------------
@@ -412,18 +572,15 @@ function Get-RelativePath {
     return $FullPath
 }
 
-# --- Decrypt files ------------------------------------------------------------
+# --- Collect all work items ---------------------------------------------------
 
-$EntriesOk = 0
-$EntriesFail = 0
-$MediaOk = 0
-$MediaFail = 0
+$workItems = @()
 
 # Find year directories (4-digit folders)
 $yearDirs = Get-ChildItem -Path $VaultDir -Directory | Where-Object { $_.Name -match '^\\d{4}$' }
 
 foreach ($yearDir in $yearDirs) {
-    # Process entry files: YYYY/*.age
+    # Collect entry files: YYYY/*.age
     $entryFiles = Get-ChildItem -Path $yearDir.FullName -File -Filter "*.age" -ErrorAction SilentlyContinue
     foreach ($entryFile in $entryFiles) {
         $relPath = Get-RelativePath -BasePath $VaultDir -FullPath $entryFile.FullName
@@ -431,41 +588,16 @@ foreach ($yearDir in $yearDirs) {
         $outRel = $relPath -replace '\\.age$', '.md'
         $outFile = Join-Path $OutputDir ($outRel -replace '/', '\\')
 
-        $outDir = Split-Path -Parent $outFile
-        if (-not (Test-Path $outDir)) {
-            New-Item -ItemType Directory -Path $outDir -Force | Out-Null
-        }
-
-        # Decrypt entry
-        $tempFile = [System.IO.Path]::GetTempFileName()
-        try {
-            $proc = Start-Process -FilePath $agePath -ArgumentList "-d", "-i", "\`"$IdentityFile\`"", "-o", "\`"$tempFile\`"", "\`"$($entryFile.FullName)\`"" -NoNewWindow -Wait -PassThru -RedirectStandardError ([System.IO.Path]::GetTempFileName())
-            if ($proc.ExitCode -eq 0) {
-                # Parse JSON and extract plaintext
-                try {
-                    $jsonContent = Get-Content $tempFile -Raw -Encoding UTF8
-                    $entry = $jsonContent | ConvertFrom-Json
-                    $plaintext = $entry.plaintext
-                    if ($null -eq $plaintext) { $plaintext = "" }
-                    # Write with UTF8 no BOM
-                    [System.IO.File]::WriteAllText($outFile, $plaintext, [System.Text.UTF8Encoding]::new($false))
-                    Write-Host "  [ENTRY OK] $relPath -> $outRel" -ForegroundColor Green
-                    $EntriesOk++
-                } catch {
-                    Write-Host "  [ENTRY FAIL] $relPath (JSON parse error)" -ForegroundColor Yellow
-                    if (Test-Path $outFile) { Remove-Item $outFile -Force }
-                    $EntriesFail++
-                }
-            } else {
-                Write-Host "  [ENTRY FAIL] $relPath (decryption error)" -ForegroundColor Yellow
-                $EntriesFail++
-            }
-        } finally {
-            if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
+        $workItems += [PSCustomObject]@{
+            Type     = 'Entry'
+            InFile   = $entryFile.FullName
+            RelPath  = $relPath
+            OutRel   = $outRel
+            OutFile  = $outFile
         }
     }
 
-    # Process media files: YYYY/media/*.{png,webp,jpg,jpeg,avif}
+    # Collect media files: YYYY/media/*.{png,webp,jpg,jpeg,avif}
     $mediaDir = Join-Path $yearDir.FullName "media"
     if (Test-Path $mediaDir) {
         $mediaFiles = Get-ChildItem -Path $mediaDir -File | Where-Object {
@@ -477,30 +609,220 @@ foreach ($yearDir in $yearDirs) {
             $relPath = $relPath -replace '\\\\', '/'
             $outFile = Join-Path $OutputDir ($relPath -replace '/', '\\')
 
-            $outDir = Split-Path -Parent $outFile
-            if (-not (Test-Path $outDir)) {
-                New-Item -ItemType Directory -Path $outDir -Force | Out-Null
-            }
-
-            # Decrypt media (binary output)
-            try {
-                $proc = Start-Process -FilePath $agePath -ArgumentList "-d", "-i", "\`"$IdentityFile\`"", "-o", "\`"$outFile\`"", "\`"$($mediaFile.FullName)\`"" -NoNewWindow -Wait -PassThru -RedirectStandardError ([System.IO.Path]::GetTempFileName())
-                if ($proc.ExitCode -eq 0) {
-                    Write-Host "  [MEDIA OK] $relPath" -ForegroundColor Green
-                    $MediaOk++
-                } else {
-                    Write-Host "  [MEDIA FAIL] $relPath" -ForegroundColor Yellow
-                    if (Test-Path $outFile) { Remove-Item $outFile -Force }
-                    $MediaFail++
-                }
-            } catch {
-                Write-Host "  [MEDIA FAIL] $relPath (error: $_)" -ForegroundColor Yellow
-                if (Test-Path $outFile) { Remove-Item $outFile -Force }
-                $MediaFail++
+            $workItems += [PSCustomObject]@{
+                Type     = 'Media'
+                InFile   = $mediaFile.FullName
+                RelPath  = $relPath
+                OutRel   = $relPath
+                OutFile  = $outFile
             }
         }
     }
 }
+
+$totalFiles = $workItems.Count
+
+if ($totalFiles -eq 0) {
+    Write-Host "No encrypted files found in vault." -ForegroundColor Yellow
+    Write-Host ""
+    exit 0
+}
+
+Write-Host "Found $totalFiles files to decrypt."
+Write-Host ""
+Write-Host "Press any key to begin decryption..." -ForegroundColor DarkGray
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+Write-Host ""
+# --- Ensure output directories exist ------------------------------------------
+
+foreach ($item in $workItems) {
+    $outDir = Split-Path -Parent $item.OutFile
+    if (-not (Test-Path $outDir)) {
+        New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+    }
+}
+
+# --- Decrypt function ---------------------------------------------------------
+
+function Invoke-DecryptItem {
+    param(
+        [PSCustomObject]$Item,
+        [string]$AgePath,
+        [string]$IdentityFilePath
+    )
+
+    $result = [PSCustomObject]@{
+        Type    = $Item.Type
+        RelPath = $Item.RelPath
+        Success = $false
+        Error   = $null
+    }
+
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    $stderrFile = [System.IO.Path]::GetTempFileName()
+    try {
+        if ($Item.Type -eq 'Entry') {
+            $proc = Start-Process -FilePath $AgePath -ArgumentList "-d", "-i", "\`"$IdentityFilePath\`"", "-o", "\`"$tempFile\`"", "\`"$($Item.InFile)\`"" -NoNewWindow -Wait -PassThru -RedirectStandardError $stderrFile
+            if ($proc.ExitCode -eq 0) {
+                try {
+                    $jsonContent = Get-Content $tempFile -Raw -Encoding UTF8
+                    $entry = $jsonContent | ConvertFrom-Json
+                    $plaintext = $entry.plaintext
+                    if ($null -eq $plaintext) { $plaintext = "" }
+                    [System.IO.File]::WriteAllText($Item.OutFile, $plaintext, [System.Text.UTF8Encoding]::new($false))
+                    $result.Success = $true
+                } catch {
+                    $result.Error = "JSON parse error"
+                    if (Test-Path $Item.OutFile) { Remove-Item $Item.OutFile -Force }
+                }
+            } else {
+                $result.Error = "decryption error"
+            }
+        } else {
+            # Media file — decrypt directly to output
+            $proc = Start-Process -FilePath $AgePath -ArgumentList "-d", "-i", "\`"$IdentityFilePath\`"", "-o", "\`"$($Item.OutFile)\`"", "\`"$($Item.InFile)\`"" -NoNewWindow -Wait -PassThru -RedirectStandardError $stderrFile
+            if ($proc.ExitCode -eq 0) {
+                $result.Success = $true
+            } else {
+                $result.Error = "decryption error"
+                if (Test-Path $Item.OutFile) { Remove-Item $Item.OutFile -Force }
+            }
+        }
+    } catch {
+        $result.Error = $_.Exception.Message
+        if (Test-Path $Item.OutFile) { Remove-Item $Item.OutFile -Force }
+    } finally {
+        if (Test-Path $tempFile) { Remove-Item $tempFile -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $stderrFile) { Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue }
+    }
+
+    return $result
+}
+
+# --- Progress bar helper ------------------------------------------------------
+
+function Show-InlineProgress {
+    param([int]$Completed, [int]$Total)
+    if ($Total -eq 0) { return }
+    $pct = [Math]::Min(100, [int](($Completed / $Total) * 100))
+    $barWidth = 40
+    $filled = [Math]::Floor($pct * $barWidth / 100)
+    $empty = $barWidth - $filled
+    $filledBar = [string]::new([char]0x2588, $filled)  # █
+    $emptyBar = [string]::new([char]0x2591, $empty)    # ░
+    $line = "  $filledBar$emptyBar  \${pct}%  ($Completed/$Total)"
+    Write-Host "\`r$line" -NoNewline
+}
+
+# --- Decrypt files (parallel or sequential) -----------------------------------
+
+$EntriesOk = 0
+$EntriesFail = 0
+$MediaOk = 0
+$MediaFail = 0
+$failedFiles = @()
+
+$useParallel = $PSVersionTable.PSVersion.Major -ge 7
+
+if ($useParallel) {
+
+    # Synchronized state for progress tracking
+    $sync = [hashtable]::Synchronized(@{
+        Completed   = 0
+        EntriesOk   = 0
+        EntriesFail = 0
+        MediaOk     = 0
+        MediaFail   = 0
+        FailedFiles = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
+    })
+
+    # Launch parallel work as a job
+    $job = $workItems | ForEach-Object -Parallel {
+        $item = $_
+        $syncRef = $using:sync
+        $ageTool = $using:agePath
+        $idFile = $using:IdentityFile
+
+        $tempFile = [System.IO.Path]::GetTempFileName()
+        $stderrFile = [System.IO.Path]::GetTempFileName()
+        try {
+            if ($item.Type -eq 'Entry') {
+                $proc = Start-Process -FilePath $ageTool -ArgumentList "-d", "-i", "\`"$idFile\`"", "-o", "\`"$tempFile\`"", "\`"$($item.InFile)\`"" -NoNewWindow -Wait -PassThru -RedirectStandardError $stderrFile
+                if ($proc.ExitCode -eq 0) {
+                    try {
+                        $jsonContent = Get-Content $tempFile -Raw -Encoding UTF8
+                        $entry = $jsonContent | ConvertFrom-Json
+                        $plaintext = $entry.plaintext
+                        if ($null -eq $plaintext) { $plaintext = "" }
+                        [System.IO.File]::WriteAllText($item.OutFile, $plaintext, [System.Text.UTF8Encoding]::new($false))
+                        $syncRef.EntriesOk++
+                    } catch {
+                        $syncRef.EntriesFail++
+                        $syncRef.FailedFiles.Add("[ENTRY FAIL] $($item.RelPath) (JSON parse error)") | Out-Null
+                        if (Test-Path $item.OutFile) { Remove-Item $item.OutFile -Force }
+                    }
+                } else {
+                    $syncRef.EntriesFail++
+                    $syncRef.FailedFiles.Add("[ENTRY FAIL] $($item.RelPath) (decryption error)") | Out-Null
+                }
+            } else {
+                $proc = Start-Process -FilePath $ageTool -ArgumentList "-d", "-i", "\`"$idFile\`"", "-o", "\`"$($item.OutFile)\`"", "\`"$($item.InFile)\`"" -NoNewWindow -Wait -PassThru -RedirectStandardError $stderrFile
+                if ($proc.ExitCode -eq 0) {
+                    $syncRef.MediaOk++
+                } else {
+                    $syncRef.MediaFail++
+                    $syncRef.FailedFiles.Add("[MEDIA FAIL] $($item.RelPath)") | Out-Null
+                    if (Test-Path $item.OutFile) { Remove-Item $item.OutFile -Force }
+                }
+            }
+        } catch {
+            if ($item.Type -eq 'Entry') { $syncRef.EntriesFail++ } else { $syncRef.MediaFail++ }
+            $syncRef.FailedFiles.Add("[$($item.Type.ToUpper()) FAIL] $($item.RelPath) ($_)") | Out-Null
+            if (Test-Path $item.OutFile) { Remove-Item $item.OutFile -Force }
+        } finally {
+            if (Test-Path $tempFile) { Remove-Item $tempFile -Force -ErrorAction SilentlyContinue }
+            if (Test-Path $stderrFile) { Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue }
+            $syncRef.Completed++
+        }
+    } -ThrottleLimit $threadCount -AsJob
+
+    # Monitor progress from main thread
+    while ($job.State -eq 'Running') {
+        Show-InlineProgress -Completed $sync.Completed -Total $totalFiles
+        Start-Sleep -Milliseconds 200
+    }
+
+    # Final progress update
+    $job | Receive-Job -Wait -AutoRemoveJob | Out-Null
+    Show-InlineProgress -Completed $totalFiles -Total $totalFiles
+    Write-Host ""  # move to next line
+
+    $EntriesOk = $sync.EntriesOk
+    $EntriesFail = $sync.EntriesFail
+    $MediaOk = $sync.MediaOk
+    $MediaFail = $sync.MediaFail
+    $failedFiles = @($sync.FailedFiles)
+} else {
+    $completed = 0
+    foreach ($item in $workItems) {
+        $completed++
+        Show-InlineProgress -Completed $completed -Total $totalFiles
+
+        $result = Invoke-DecryptItem -Item $item -AgePath $agePath -IdentityFilePath $IdentityFile
+
+        if ($result.Success) {
+            if ($result.Type -eq 'Entry') { $EntriesOk++ } else { $MediaOk++ }
+        } else {
+            if ($result.Type -eq 'Entry') { $EntriesFail++ } else { $MediaFail++ }
+            $failedFiles += "[$($result.Type.ToUpper()) FAIL] $($result.RelPath) ($($result.Error))"
+        }
+    }
+
+    Show-InlineProgress -Completed $totalFiles -Total $totalFiles
+    Write-Host ""  # move to next line
+}
+
+# --- Summary ------------------------------------------------------------------
 
 Write-Host ""
 Write-Host "============================================"
@@ -512,9 +834,34 @@ Write-Host ""
 Write-Host "Decrypted files are in: $OutputDir"
 Write-Host ""
 
-if ($EntriesFail -gt 0 -or $MediaFail -gt 0) {
-    Write-Host "NOTE: Some files could not be decrypted. They may be corrupted" -ForegroundColor Yellow
-    Write-Host "or your identity key may not match this vault." -ForegroundColor Yellow
+if ($failedFiles.Count -gt 0) {
+    Write-Host "Failed files:" -ForegroundColor Yellow
+    foreach ($f in $failedFiles) {
+        Write-Host "  $f" -ForegroundColor Yellow
+    }
+    Write-Host ""
+    Write-Host "NOTE: These files may be corrupted or your identity key" -ForegroundColor Yellow
+    Write-Host "may not match this vault." -ForegroundColor Yellow
     exit 1
 }
-`,Cm=`vault_key.age`,wm=class{storage;currentIdentity=null;unlockedViaRecovery=!1;constructor(e){this.storage=e}get identity(){return this.currentIdentity}get wasUnlockedWithRecoveryKey(){return this.unlockedViaRecovery}async loadVaultPublicKey(){let e=await this.storage.downloadFile(`vault_pub.txt`);if(!e)throw Error(`Vault public key file is missing.`);return new TextDecoder().decode(e).trim()}async validateRecoveryKey(e,t){let n=`recovery-check-${dm(crypto.getRandomValues(new Uint8Array(16)))}`;try{if(await mm(e,await pm(t,n))!==n)throw Error(`Recovery key does not match vault identity.`)}catch{throw Error(`Recovery key is invalid for this vault.`)}}async isVaultInitialized(){return(await this.storage.listFiles(``)).includes(Cm)}async unlockVault(e){let t=e.trim();if(!t)throw Error(`Password is required to unlock your vault.`);let n=await ym(t),r=await this.storage.downloadFile(Cm);if(!r)throw Error(`Vault key file is missing from remote storage.`);let i=``;try{i=await _m(n,r)}catch{throw Error(`Unable to unlock vault. Your password may be incorrect. If you forgot it, use Recovery Key unlock.`)}return this.currentIdentity={publicKey:await this.loadVaultPublicKey(),secretKey:i.trim()},this.unlockedViaRecovery=!1,{method:`password`,slotId:null,label:`Password`}}async unlockVaultWithRecoveryKey(e){let t=e.trim().toUpperCase();if(!t)throw Error(`Recovery key is required to unlock your vault.`);if(!t.startsWith(`AGE-SECRET-KEY-`))throw Error(`Recovery key format looks invalid. Please paste the full key exactly as provided.`);let n=await this.loadVaultPublicKey();return await this.validateRecoveryKey(t,n),this.currentIdentity={publicKey:n,secretKey:t},this.unlockedViaRecovery=!0,{method:`recovery-key`,slotId:null,label:`Recovery Key`}}async setNewPasswordAfterRecovery(e){if(!this.currentIdentity)throw Error(`Vault must be unlocked before resetting the password.`);if(!this.unlockedViaRecovery)throw Error(`Password reset via recovery is only available immediately after recovery-key unlock.`);let t=e.trim();if(!t)throw Error(`Please provide a new password.`);let n=await gm(await ym(t),this.currentIdentity.secretKey);await this.storage.uploadFile(Cm,n),this.unlockedViaRecovery=!1}async initializeVault(e){let t=e.trim();if(!t)throw Error(`Password is required to create your vault.`);let n=await ym(t),r=await fm(),i=await gm(n,r.secretKey);await this.storage.uploadFile(Cm,i),await this.storage.uploadFile(`vault_pub.txt`,new TextEncoder().encode(r.publicKey),`text/plain`);try{await this.storage.uploadFile(`README-Silent-Memoirs.txt`,new TextEncoder().encode(bm),`text/plain`),await this.storage.uploadFile(`decrypt-vault.sh`,new TextEncoder().encode(xm),`text/plain`),await this.storage.uploadFile(`Decrypt-Vault.ps1`,new TextEncoder().encode(Sm),`text/plain`)}catch{throw Error(`Failed to upload vault instructions file. Vault initialization aborted.`)}return this.currentIdentity=r,this.unlockedViaRecovery=!1,{recoveryKey:r.secretKey}}},Tm={outline:{xmlns:`http://www.w3.org/2000/svg`,width:24,height:24,viewBox:`0 0 24 24`,fill:`none`,stroke:`currentColor`,strokeWidth:2,strokeLinecap:`round`,strokeLinejoin:`round`},filled:{xmlns:`http://www.w3.org/2000/svg`,width:24,height:24,viewBox:`0 0 24 24`,fill:`currentColor`,stroke:`none`}},Em=(e,t,n,r)=>{let i=(0,S.forwardRef)(({color:n=`currentColor`,size:i=24,stroke:a=2,title:o,className:s,children:c,...l},u)=>(0,S.createElement)(`svg`,{ref:u,...Tm[e],width:i,height:i,className:[`tabler-icon`,`tabler-icon-${t}`,s].join(` `),...e===`filled`?{fill:n}:{strokeWidth:a,stroke:n},...l},[o&&(0,S.createElement)(`title`,{key:`svg-title`},o),...r.map(([e,t])=>(0,S.createElement)(e,t)),...Array.isArray(c)?c:[c]]));return i.displayName=`${n}`,i},Dm=Em(`outline`,`brand-google`,`BrandGoogle`,[[`path`,{d:`M20.945 11a9 9 0 1 1 -3.284 -5.997l-2.655 2.392a5.5 5.5 0 1 0 2.119 6.605h-4.125v-3h7.945`,key:`svg-0`}]]),Om={status:`idle`},km=3e3*1e3,Am=(0,S.createContext)(null);function jm(){let e=(0,S.useContext)(Am);if(!e)throw Error(`useSessionManager must be used within SessionProvider`);return e}function Mm({children:e}){let[t,n]=(0,S.useState)(!1),[r,i]=(0,S.useState)(!1),[a,o]=(0,S.useState)(()=>{let e=localStorage.getItem(`token_issued_at`);return e?parseInt(e,10):null}),s=(0,S.useRef)([]),c=()=>`242891391052-h1n8qvad6v9a83j2ah23kp3g2mms35ik.apps.googleusercontent.com`,l=e=>new Promise((t,n)=>{try{if(!window.google?.accounts?.oauth2){n(Error(`Google Identity Services script not loaded`));return}window.google.accounts.oauth2.initTokenClient({client_id:c(),scope:ap,prompt:e?``:`consent`,callback:async e=>{if(e.error){n(Error(e.error));return}if(e.access_token){let n=Date.now();localStorage.setItem(`google_access_token`,e.access_token),localStorage.setItem(`token_issued_at`,n.toString()),o(n),_p(n);try{hp(await pp(e.access_token))}catch(e){console.warn(`Unable to refresh Google user profile.`,e)}t(e.access_token)}else n(Error(`No access token returned`))}}).requestAccessToken({prompt:e?``:`consent`})}catch(e){n(e)}}),u=(e,t)=>{s.current.forEach(({resolve:n,reject:r})=>{e?r(e):t&&n(t)}),s.current=[],n(!1),i(!1)},d=async e=>{if(i(!0),e)try{u(null,await l(!0));return}catch(e){console.warn(`Silent refresh failed, requiring user interaction:`,e)}n(!0)},f=e=>{let t=new Promise((e,t)=>{s.current.push({resolve:e,reject:t})});return s.current.length===1&&d(e),t};return(0,S.useEffect)(()=>{if(!a)return;let e=setInterval(()=>{Date.now()-a>=3e6&&s.current.length===0&&f(!0).catch(e=>console.error(`Auto pre-emptive refresh failed`,e))},1e4);return()=>clearInterval(e)},[a]),(0,S.useEffect)(()=>{let e=e=>{e.key===`token_issued_at`&&e.newValue?o(parseInt(e.newValue,10)):e.key===`token_issued_at`&&!e.newValue&&o(null)},t=e=>{let t=e;typeof t.detail==`number`&&o(t.detail)};return window.addEventListener(`storage`,e),window.addEventListener(sp,t),()=>{window.removeEventListener(`storage`,e),window.removeEventListener(sp,t)}},[]),(0,L.jsxs)(Am.Provider,{value:{triggerRefresh:f,tokenIssuedAt:a},children:[e,(0,L.jsx)(G,{opened:t,onClose:()=>{},centered:!0,closeOnClickOutside:!1,closeOnEscape:!1,withCloseButton:!1,title:(0,L.jsx)(Kl,{order:4,c:`red.6`,children:`Session Re-authentication Required`}),children:(0,L.jsxs)(zl,{gap:`md`,py:`xs`,children:[(0,L.jsx)(nl,{size:`sm`,children:`Due to privacy and browser policies, we could not silently renew your Google Drive connection. Your current sync operation has been paused.`}),(0,L.jsx)(nl,{size:`sm`,fw:500,children:`Please explicitly reconnect to resume smoothly. Your unsaved entry text is safe and will automatically sync once authorized.`}),(0,L.jsx)(dl,{className:`mt-4`,size:`md`,variant:`filled`,color:`red.7`,leftSection:(0,L.jsx)(Dm,{size:20}),loading:r&&!t,onClick:async()=>{try{u(null,await l(!1))}catch(e){console.error(`Manual reconnect failed`,e)}},children:`Reconnect Google Drive`})]})})]})}var Nm=1e6,Pm=1440,Fm=20,Im=[`png`,`webp`,`jpg`,`jpeg`,`avif`],Lm={png:`image/png`,webp:`image/webp`,jpg:`image/jpeg`,jpeg:`image/jpeg`,avif:`image/avif`},Rm=new Map([[`image/png`,`png`],[`image/webp`,`webp`],[`image/jpeg`,`jpg`],[`image/jpg`,`jpg`],[`image/avif`,`avif`]]),zm=/^\d{4}\/media\/\d{4}-\d{2}-\d{2}_\d{2}-\d{2}(?:-\d{2})?\.(png|webp|jpg|jpeg|avif)$/i,Bm=/^pending-media:\/\/([0-9a-fA-F-]{36})$/,Vm=new Map,Hm=new Map;function Um(e){return e.toString().padStart(2,`0`)}function Wm(e){return`${e.getFullYear()}-${Um(e.getMonth()+1)}-${Um(e.getDate())}_${Um(e.getHours())}-${Um(e.getMinutes())}`}function Gm(e){if(!e)return null;let t=/^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})$/.exec(e.trim());if(!t)return null;let[,n,r,i,a,o]=t,s=new Date(Number(n),Number(r)-1,Number(i),Number(a),Number(o),0,0);return Number.isNaN(s.getTime())?null:s}function Km(e){let t=Gm(e)??new Date;return{year:String(t.getFullYear()),date:t}}function qm(e){let t=e.split(`/`);return t[t.length-1]??e}function Jm(e,t,n=.92){return new Promise((r,i)=>{e.toBlob(e=>{if(!e){i(Error(`Unable to encode image blob.`));return}r(e)},t,n)})}function Ym(e){return new Promise((t,n)=>{let r=new Image;r.onload=()=>t(r),r.onerror=()=>n(Error(`Unable to decode image.`)),r.src=e})}function Xm(e){return e.trim().replace(/^<|>$/g,``)}function Zm(e){let t=new Uint8Array(e.byteLength);return t.set(e),t}function Qm(e){let t=Vm.get(e);return t?(Vm.delete(e),Vm.set(e,t),{bytes:Zm(t.bytes),mimeType:t.mimeType}):null}function $m(e,t,n){for(Vm.has(e)&&Vm.delete(e),Vm.set(e,{mimeType:t,bytes:Zm(n)});Vm.size>Fm;){let e=Vm.keys().next().value;if(!e)break;Vm.delete(e)}}function eh(){Vm.clear()}function th(){Hm.clear()}function nh(){return Im.map(e=>`.${e}`).join(`,`)}function rh(e){let t=e.trim().toLowerCase();return Im.includes(t)}function ih(e){return Lm[e]}function ah(e){let t=e.split(`.`).pop();return!t||!rh(t.toLowerCase())?null:Lm[t.toLowerCase()]}function oh(e){return Rm.get(e.trim().toLowerCase())??null}function sh(e,t){let n=oh(t);if(n)return n;let r=e.split(`.`).pop();if(!r)return null;let i=r.toLowerCase();return rh(i)?i:null}function ch(e){return zm.test(e.trim())}function lh(e){return`pending-media://${e}`}function uh(e){let t=Bm.exec(e.trim());return t?t[1]:null}function dh(e){let t=e.matchAll(/!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g),n=new Set;for(let e of t){let t=e[1];if(!t)continue;let r=uh(Xm(t));r&&n.add(r)}return[...n]}function fh(e,t){return t.size===0?e:e.replace(/!\[([^\]]*)\]\(([^)\s]+)(\s+"[^"]*")?\)/g,(e,n,r,i)=>{let a=uh(Xm(r));if(!a)return e;let o=t.get(a);return o?`![${n}](${o}${i??``})`:e})}function ph(e){let t=e.matchAll(/!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g),n=new Set;for(let e of t){let t=e[1];if(!t)continue;let r=Xm(t);ch(r)&&n.add(r)}return[...n]}function mh(e,t=[]){let{year:n,date:r}=Km(e),i=`${n}/media`,a=Wm(r),o=new Set(t.map(qm));return{directoryPath:i,nextPath:e=>{let t=`${i}/${a}.${e}`,n=Hm.get(t)??0;for(;;){let r=n===0?`${a}.${e}`:`${a}-${Um(n)}.${e}`;if(!o.has(r))return o.add(r),Hm.set(t,n+1),`${i}/${r}`;n+=1}}}}async function hh(e,t,n,r){let i=await pm(t,r);await e.uploadFile(n,i)}async function gh(e,t,n){let r=Qm(n);if(r)return r.bytes;let i=await e.downloadFile(n);if(!i)throw Error(`Image not found in vault storage.`);let a=await hm(t,i);return $m(n,ah(n)??`application/octet-stream`,a),Zm(a)}async function _h(e){let t=await e.arrayBuffer();return new Uint8Array(t)}async function vh(e,t,n){let r=await Ym(e),i=Math.max(0,Math.floor(t.x)),a=Math.max(0,Math.floor(t.y)),o=Math.max(1,Math.floor(t.width)),s=Math.max(1,Math.floor(t.height)),c=document.createElement(`canvas`);c.width=o,c.height=s;let l=c.getContext(`2d`);if(!l)throw Error(`Unable to initialize canvas rendering context.`);return l.drawImage(r,i,a,o,s,0,0,o,s),Jm(c,n)}async function yh(e,t){if(e.size<Nm)return e;let n=URL.createObjectURL(e);try{let r=await Ym(n),i=r.naturalWidth,a=r.naturalHeight,o=Math.min(i,a);if(o<=Pm)return e;let s=Pm/o,c=Math.max(1,Math.round(i*s)),l=Math.max(1,Math.round(a*s)),u=document.createElement(`canvas`);u.width=c,u.height=l;let d=u.getContext(`2d`);if(!d)throw Error(`Unable to initialize canvas rendering context.`);return d.drawImage(r,0,0,i,a,0,0,c,l),Jm(u,t)}finally{URL.revokeObjectURL(n)}}var bh={login:`/login`,unlock:`/unlock`,editor:`/editor`,entries:`/entries`,viewer:`/viewer`,settings:`/settings`,emotionbook:`/emotionbook`};function xh(e){return e?e.split(`/`).filter(Boolean).join(`/`):``}function Sh(e){return encodeURIComponent(e)}function Ch(e){if(!e)return null;try{return decodeURIComponent(e)}catch{return null}}function wh(e){return`${bh.viewer}?e=${Sh(e)}`}function Th(e){return encodeURIComponent(xh(e))}function Eh(e){if(!e)return``;try{return xh(decodeURIComponent(e))}catch{return``}}function Dh(e){let t=xh(e);return t?`${bh.entries}?dir=${Th(t)}`:bh.entries}var Oh=(e,t)=>t.some(t=>e instanceof t),kh,Ah;function jh(){return kh||=[IDBDatabase,IDBObjectStore,IDBIndex,IDBCursor,IDBTransaction]}function Mh(){return Ah||=[IDBCursor.prototype.advance,IDBCursor.prototype.continue,IDBCursor.prototype.continuePrimaryKey]}var Nh=new WeakMap,Ph=new WeakMap,Fh=new WeakMap;function Ih(e){let t=new Promise((t,n)=>{let r=()=>{e.removeEventListener(`success`,i),e.removeEventListener(`error`,a)},i=()=>{t(Hh(e.result)),r()},a=()=>{n(e.error),r()};e.addEventListener(`success`,i),e.addEventListener(`error`,a)});return Fh.set(t,e),t}function Lh(e){if(Nh.has(e))return;let t=new Promise((t,n)=>{let r=()=>{e.removeEventListener(`complete`,i),e.removeEventListener(`error`,a),e.removeEventListener(`abort`,a)},i=()=>{t(),r()},a=()=>{n(e.error||new DOMException(`AbortError`,`AbortError`)),r()};e.addEventListener(`complete`,i),e.addEventListener(`error`,a),e.addEventListener(`abort`,a)});Nh.set(e,t)}var Rh={get(e,t,n){if(e instanceof IDBTransaction){if(t===`done`)return Nh.get(e);if(t===`store`)return n.objectStoreNames[1]?void 0:n.objectStore(n.objectStoreNames[0])}return Hh(e[t])},set(e,t,n){return e[t]=n,!0},has(e,t){return e instanceof IDBTransaction&&(t===`done`||t===`store`)?!0:t in e}};function zh(e){Rh=e(Rh)}function Bh(e){return Mh().includes(e)?function(...t){return e.apply(Uh(this),t),Hh(this.request)}:function(...t){return Hh(e.apply(Uh(this),t))}}function Vh(e){return typeof e==`function`?Bh(e):(e instanceof IDBTransaction&&Lh(e),Oh(e,jh())?new Proxy(e,Rh):e)}function Hh(e){if(e instanceof IDBRequest)return Ih(e);if(Ph.has(e))return Ph.get(e);let t=Vh(e);return t!==e&&(Ph.set(e,t),Fh.set(t,e)),t}var Uh=e=>Fh.get(e);function Wh(e,t,{blocked:n,upgrade:r,blocking:i,terminated:a}={}){let o=indexedDB.open(e,t),s=Hh(o);return r&&o.addEventListener(`upgradeneeded`,e=>{r(Hh(o.result),e.oldVersion,e.newVersion,Hh(o.transaction),e)}),n&&o.addEventListener(`blocked`,e=>n(e.oldVersion,e.newVersion,e)),s.then(e=>{a&&e.addEventListener(`close`,()=>a()),i&&e.addEventListener(`versionchange`,e=>i(e.oldVersion,e.newVersion,e))}).catch(()=>{}),s}var Gh=[`get`,`getKey`,`getAll`,`getAllKeys`,`count`],Kh=[`put`,`add`,`delete`,`clear`],qh=new Map;function Jh(e,t){if(!(e instanceof IDBDatabase&&!(t in e)&&typeof t==`string`))return;if(qh.get(t))return qh.get(t);let n=t.replace(/FromIndex$/,``),r=t!==n,i=Kh.includes(n);if(!(n in(r?IDBIndex:IDBObjectStore).prototype)||!(i||Gh.includes(n)))return;let a=async function(e,...t){let a=this.transaction(e,i?`readwrite`:`readonly`),o=a.store;return r&&(o=o.index(t.shift())),(await Promise.all([o[n](...t),i&&a.done]))[0]};return qh.set(t,a),a}zh(e=>({...e,get:(t,n,r)=>Jh(t,n)||e.get(t,n,r),has:(t,n)=>!!Jh(t,n)||e.has(t,n)}));var Yh=[`continue`,`continuePrimaryKey`,`advance`],Xh={},Zh=new WeakMap,Qh=new WeakMap,$h={get(e,t){if(!Yh.includes(t))return e[t];let n=Xh[t];return n||=Xh[t]=function(...e){Zh.set(this,Qh.get(this)[t](...e))},n}};async function*eg(...e){let t=this;if(t instanceof IDBCursor||(t=await t.openCursor(...e)),!t)return;t=t;let n=new Proxy(t,$h);for(Qh.set(n,t),Fh.set(n,Uh(t));t;)yield n,t=await(Zh.get(n)||t.continue()),Zh.delete(n)}function tg(e,t){return t===Symbol.asyncIterator&&Oh(e,[IDBIndex,IDBObjectStore,IDBCursor])||t===`iterate`&&Oh(e,[IDBIndex,IDBObjectStore])}zh(e=>({...e,get(t,n,r){return tg(t,n)?eg:e.get(t,n,r)},has(t,n){return tg(t,n)||e.has(t,n)}}));var ng=`silent-memoirs-staged-media`,rg=1,ig=`staged-media`,ag=`by-entry-key`,og=null;function sg(){return og||=Wh(ng,rg,{upgrade(e){e.createObjectStore(ig,{keyPath:`pendingId`}).createIndex(ag,`entryKey`,{unique:!1})}}),og}async function cg(e){let t=await sg(),n=Date.now(),r={pendingId:crypto.randomUUID(),entryKey:e.entryKey,fileName:e.fileName,mimeType:e.mimeType,extension:e.extension,blob:e.blob,createdAt:n,updatedAt:n,uploadedPath:null};return await t.put(ig,r),r}async function lg(e){return await(await sg()).get(ig,e)??null}async function ug(e){let t=await sg(),n=await Promise.all(e.map(e=>t.get(ig,e))),r=new Map;return n.forEach(e=>{e&&r.set(e.pendingId,e)}),r}async function dg(e){return(await sg()).getAllFromIndex(ig,ag,e)}async function fg(e,t){let n=await sg(),r=await n.get(ig,e);r&&await n.put(ig,{...r,uploadedPath:t,updatedAt:Date.now()})}async function pg(e){if(e.length===0)return;let t=(await sg()).transaction(ig,`readwrite`);await Promise.all(e.map(e=>t.store.delete(e))),await t.done}async function mg(e){let t=(await sg()).transaction(ig,`readwrite`),n=await t.store.index(ag).getAllKeys(e);await Promise.all(n.map(e=>t.store.delete(e))),await t.done}async function hg(e,t,n){let r=(await dg(e)).filter(e=>!t.has(e.pendingId)),i=r.map(e=>e.pendingId);if(n){for(let e of r)if(e.uploadedPath)try{await n.deleteFile(e.uploadedPath)}catch(t){console.error(`Failed to remove uploaded staged media while pruning unreferenced placeholders`,e.uploadedPath,t)}}await pg(i)}async function gg(){await(await sg()).clear(ig)}async function _g(e,t){let n=await dg(e);for(let e of n)if(e.uploadedPath)try{await t.deleteFile(e.uploadedPath)}catch(t){console.error(`Failed to remove staged uploaded media file during discard`,e.uploadedPath,t)}await mg(e)}var vg=o(((e,t)=>{(function(n,r){typeof e==`object`&&t!==void 0?t.exports=r():typeof define==`function`&&define.amd?define(r):(n=typeof globalThis<`u`?globalThis:n||self).dayjs=r()})(e,(function(){var e=1e3,t=6e4,n=36e5,r=`millisecond`,i=`second`,a=`minute`,o=`hour`,s=`day`,c=`week`,l=`month`,u=`quarter`,d=`year`,f=`date`,p=`Invalid Date`,m=/^(\d{4})[-/]?(\d{1,2})?[-/]?(\d{0,2})[Tt\s]*(\d{1,2})?:?(\d{1,2})?:?(\d{1,2})?[.:]?(\d+)?$/,h=/\[([^\]]+)]|Y{1,4}|M{1,4}|D{1,2}|d{1,4}|H{1,2}|h{1,2}|a|A|m{1,2}|s{1,2}|Z{1,2}|SSS/g,g={name:`en`,weekdays:`Sunday_Monday_Tuesday_Wednesday_Thursday_Friday_Saturday`.split(`_`),months:`January_February_March_April_May_June_July_August_September_October_November_December`.split(`_`),ordinal:function(e){var t=[`th`,`st`,`nd`,`rd`],n=e%100;return`[`+e+(t[(n-20)%10]||t[n]||t[0])+`]`}},_=function(e,t,n){var r=String(e);return!r||r.length>=t?e:``+Array(t+1-r.length).join(n)+e},v={s:_,z:function(e){var t=-e.utcOffset(),n=Math.abs(t),r=Math.floor(n/60),i=n%60;return(t<=0?`+`:`-`)+_(r,2,`0`)+`:`+_(i,2,`0`)},m:function e(t,n){if(t.date()<n.date())return-e(n,t);var r=12*(n.year()-t.year())+(n.month()-t.month()),i=t.clone().add(r,l),a=n-i<0,o=t.clone().add(r+(a?-1:1),l);return+(-(r+(n-i)/(a?i-o:o-i))||0)},a:function(e){return e<0?Math.ceil(e)||0:Math.floor(e)},p:function(e){return{M:l,y:d,w:c,d:s,D:f,h:o,m:a,s:i,ms:r,Q:u}[e]||String(e||``).toLowerCase().replace(/s$/,``)},u:function(e){return e===void 0}},y=`en`,b={};b[y]=g;var x=`$isDayjsObject`,S=function(e){return e instanceof E||!(!e||!e[x])},C=function e(t,n,r){var i;if(!t)return y;if(typeof t==`string`){var a=t.toLowerCase();b[a]&&(i=a),n&&(b[a]=n,i=a);var o=t.split(`-`);if(!i&&o.length>1)return e(o[0])}else{var s=t.name;b[s]=t,i=s}return!r&&i&&(y=i),i||!r&&y},w=function(e,t){if(S(e))return e.clone();var n=typeof t==`object`?t:{};return n.date=e,n.args=arguments,new E(n)},T=v;T.l=C,T.i=S,T.w=function(e,t){return w(e,{locale:t.$L,utc:t.$u,x:t.$x,$offset:t.$offset})};var E=function(){function g(e){this.$L=C(e.locale,null,!0),this.parse(e),this.$x=this.$x||e.x||{},this[x]=!0}var _=g.prototype;return _.parse=function(e){this.$d=function(e){var t=e.date,n=e.utc;if(t===null)return new Date(NaN);if(T.u(t))return new Date;if(t instanceof Date)return new Date(t);if(typeof t==`string`&&!/Z$/i.test(t)){var r=t.match(m);if(r){var i=r[2]-1||0,a=(r[7]||`0`).substring(0,3);return n?new Date(Date.UTC(r[1],i,r[3]||1,r[4]||0,r[5]||0,r[6]||0,a)):new Date(r[1],i,r[3]||1,r[4]||0,r[5]||0,r[6]||0,a)}}return new Date(t)}(e),this.init()},_.init=function(){var e=this.$d;this.$y=e.getFullYear(),this.$M=e.getMonth(),this.$D=e.getDate(),this.$W=e.getDay(),this.$H=e.getHours(),this.$m=e.getMinutes(),this.$s=e.getSeconds(),this.$ms=e.getMilliseconds()},_.$utils=function(){return T},_.isValid=function(){return this.$d.toString()!==p},_.isSame=function(e,t){var n=w(e);return this.startOf(t)<=n&&n<=this.endOf(t)},_.isAfter=function(e,t){return w(e)<this.startOf(t)},_.isBefore=function(e,t){return this.endOf(t)<w(e)},_.$g=function(e,t,n){return T.u(e)?this[t]:this.set(n,e)},_.unix=function(){return Math.floor(this.valueOf()/1e3)},_.valueOf=function(){return this.$d.getTime()},_.startOf=function(e,t){var n=this,r=!!T.u(t)||t,u=T.p(e),p=function(e,t){var i=T.w(n.$u?Date.UTC(n.$y,t,e):new Date(n.$y,t,e),n);return r?i:i.endOf(s)},m=function(e,t){return T.w(n.toDate()[e].apply(n.toDate(`s`),(r?[0,0,0,0]:[23,59,59,999]).slice(t)),n)},h=this.$W,g=this.$M,_=this.$D,v=`set`+(this.$u?`UTC`:``);switch(u){case d:return r?p(1,0):p(31,11);case l:return r?p(1,g):p(0,g+1);case c:var y=this.$locale().weekStart||0,b=(h<y?h+7:h)-y;return p(r?_-b:_+(6-b),g);case s:case f:return m(v+`Hours`,0);case o:return m(v+`Minutes`,1);case a:return m(v+`Seconds`,2);case i:return m(v+`Milliseconds`,3);default:return this.clone()}},_.endOf=function(e){return this.startOf(e,!1)},_.$set=function(e,t){var n,c=T.p(e),u=`set`+(this.$u?`UTC`:``),p=(n={},n[s]=u+`Date`,n[f]=u+`Date`,n[l]=u+`Month`,n[d]=u+`FullYear`,n[o]=u+`Hours`,n[a]=u+`Minutes`,n[i]=u+`Seconds`,n[r]=u+`Milliseconds`,n)[c],m=c===s?this.$D+(t-this.$W):t;if(c===l||c===d){var h=this.clone().set(f,1);h.$d[p](m),h.init(),this.$d=h.set(f,Math.min(this.$D,h.daysInMonth())).$d}else p&&this.$d[p](m);return this.init(),this},_.set=function(e,t){return this.clone().$set(e,t)},_.get=function(e){return this[T.p(e)]()},_.add=function(r,u){var f,p=this;r=Number(r);var m=T.p(u),h=function(e){var t=w(p);return T.w(t.date(t.date()+Math.round(e*r)),p)};if(m===l)return this.set(l,this.$M+r);if(m===d)return this.set(d,this.$y+r);if(m===s)return h(1);if(m===c)return h(7);var g=(f={},f[a]=t,f[o]=n,f[i]=e,f)[m]||1,_=this.$d.getTime()+r*g;return T.w(_,this)},_.subtract=function(e,t){return this.add(-1*e,t)},_.format=function(e){var t=this,n=this.$locale();if(!this.isValid())return n.invalidDate||p;var r=e||`YYYY-MM-DDTHH:mm:ssZ`,i=T.z(this),a=this.$H,o=this.$m,s=this.$M,c=n.weekdays,l=n.months,u=n.meridiem,d=function(e,n,i,a){return e&&(e[n]||e(t,r))||i[n].slice(0,a)},f=function(e){return T.s(a%12||12,e,`0`)},m=u||function(e,t,n){var r=e<12?`AM`:`PM`;return n?r.toLowerCase():r};return r.replace(h,(function(e,r){return r||function(e){switch(e){case`YY`:return String(t.$y).slice(-2);case`YYYY`:return T.s(t.$y,4,`0`);case`M`:return s+1;case`MM`:return T.s(s+1,2,`0`);case`MMM`:return d(n.monthsShort,s,l,3);case`MMMM`:return d(l,s);case`D`:return t.$D;case`DD`:return T.s(t.$D,2,`0`);case`d`:return String(t.$W);case`dd`:return d(n.weekdaysMin,t.$W,c,2);case`ddd`:return d(n.weekdaysShort,t.$W,c,3);case`dddd`:return c[t.$W];case`H`:return String(a);case`HH`:return T.s(a,2,`0`);case`h`:return f(1);case`hh`:return f(2);case`a`:return m(a,o,!0);case`A`:return m(a,o,!1);case`m`:return String(o);case`mm`:return T.s(o,2,`0`);case`s`:return String(t.$s);case`ss`:return T.s(t.$s,2,`0`);case`SSS`:return T.s(t.$ms,3,`0`);case`Z`:return i}return null}(e)||i.replace(`:`,``)}))},_.utcOffset=function(){return 15*-Math.round(this.$d.getTimezoneOffset()/15)},_.diff=function(r,f,p){var m,h=this,g=T.p(f),_=w(r),v=(_.utcOffset()-this.utcOffset())*t,y=this-_,b=function(){return T.m(h,_)};switch(g){case d:m=b()/12;break;case l:m=b();break;case u:m=b()/3;break;case c:m=(y-v)/6048e5;break;case s:m=(y-v)/864e5;break;case o:m=y/n;break;case a:m=y/t;break;case i:m=y/e;break;default:m=y}return p?m:T.a(m)},_.daysInMonth=function(){return this.endOf(l).$D},_.$locale=function(){return b[this.$L]},_.locale=function(e,t){if(!e)return this.$L;var n=this.clone(),r=C(e,t,!0);return r&&(n.$L=r),n},_.clone=function(){return T.w(this.$d,this)},_.toDate=function(){return new Date(this.valueOf())},_.toJSON=function(){return this.isValid()?this.toISOString():null},_.toISOString=function(){return this.$d.toISOString()},_.toString=function(){return this.$d.toUTCString()},g}(),D=E.prototype;return w.prototype=D,[[`$ms`,r],[`$s`,i],[`$m`,a],[`$H`,o],[`$W`,s],[`$M`,l],[`$y`,d],[`$D`,f]].forEach((function(e){D[e[1]]=function(t){return this.$g(t,e[0],e[1])}})),w.extend=function(e,t){return e.$i||=(e(t,E,w),!0),w},w.locale=C,w.isDayjs=S,w.unix=function(e){return w(1e3*e)},w.en=b[y],w.Ls=b,w.p={},w}))})),yg=l(vg(),1),bg=/^Entry For \d{2} [A-Za-z]{3}, '\d{2}$/;function xg(e){let t=/^(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})$/.exec(e);if(!t)return null;let n=new Date(`${t[1]}T${t[2]}:${t[3]}:00`);return Number.isNaN(n.getTime())?null:n}function Sg(e){return`Entry For ${(0,yg.default)(xg(e)??new Date).format(`DD MMM, 'YY`)}`}function Cg(e,t){let n=e?.trim()??``;return n.length>0?n:Sg(t)}function wg(e,t){let n=e.trim();return bg.test(n)?n===Sg(t):!1}var Tg=`manifest.age`,Eg=300*1e3,Dg=class e{storage;identity;manifestCache=null;manifestCacheLoadedAt=0;explorerIndex=null;manifestLoadPromise=null;constructor(e,t){this.storage=e,this.identity=t}async ensureInstructionsFile(){try{let e=await this.storage.listFiles(``);e.includes(`README-Silent-Memoirs.txt`)||await this.storage.uploadFile(`README-Silent-Memoirs.txt`,new TextEncoder().encode(bm),`text/plain`),e.includes(`decrypt-vault.sh`)||await this.storage.uploadFile(`decrypt-vault.sh`,new TextEncoder().encode(xm),`text/plain`),e.includes(`Decrypt-Vault.ps1`)||await this.storage.uploadFile(`Decrypt-Vault.ps1`,new TextEncoder().encode(Sm),`text/plain`)}catch(e){console.warn(`Failed to backfill vault recovery files:`,e)}}normalizeDirectoryPath(e){return e?e.split(`/`).filter(Boolean).join(`/`):``}getParentPath(e){let t=e.split(`/`).filter(Boolean);return t.length<=1?``:t.slice(0,-1).join(`/`)}getEntryName(e){return(e.split(`/`).pop()||``).replace(/\.age$/,``)}getYearFromDate(e){return e.split(`-`)[0]||new Date().getFullYear().toString()}toMetadata(e,t){let n=this.getParentPath(t);return{id:e.id,path:t,name:this.getEntryName(t),parentPath:n,title:Cg(e.title,e.date),date:e.date,year:this.getYearFromDate(e.date),updatedAt:new Date().toISOString(),mediaIds:e.mediaIds||[]}}sortMetadata(e){return[...e].sort((e,t)=>{let n=t.date.localeCompare(e.date);return n===0?t.updatedAt.localeCompare(e.updatedAt):n})}sortFolderChildren(e){return[...e].sort((e,t)=>{let n=/^\d{4}$/.test(e.name),r=/^\d{4}$/.test(t.name);return n&&r?t.name.localeCompare(e.name):n?-1:r?1:e.name.localeCompare(t.name)})}sortMediaFiles(e){return[...e].sort((e,t)=>t.name.localeCompare(e.name))}addToGroupedMap(e,t,n){let r=e.get(t);if(r){r.push(n);return}e.set(t,[n])}buildMediaFilesFromEntries(e){let t=new Map;for(let n of e){let e=Array.isArray(n.mediaIds)?n.mediaIds:[];for(let r of e){if(typeof r!=`string`)continue;let e=this.normalizeDirectoryPath(r);if(!e)continue;let i=e.split(`.`).pop()?.toLowerCase();if(!i||!rh(i))continue;let a=this.normalizeDirectoryPath(this.getParentPath(e)),o=t.get(e);if(o){n.updatedAt>o.updatedAt&&(o.updatedAt=n.updatedAt);continue}t.set(e,{path:e,name:e.split(`/`).pop()||e,parentPath:a,year:e.split(`/`)[0]||``,updatedAt:n.updatedAt})}}let n=new Map;for(let e of t.values())this.addToGroupedMap(n,e.parentPath,e);for(let[e,t]of n.entries())n.set(e,this.sortMediaFiles(t));return n}buildExplorerIndex(e){let t=new Map,n=new Map;for(let n of e.directories)n.path!==n.parentPath&&this.addToGroupedMap(t,n.parentPath,n);for(let[e,n]of t.entries())t.set(e,this.sortFolderChildren(n));for(let t of e.entries)this.addToGroupedMap(n,t.parentPath,t);for(let[e,t]of n.entries())n.set(e,this.sortMetadata(t));let r=new Set(e.directories.map(e=>e.path));return r.add(``),{knownPaths:r,foldersByParentPath:t,entriesByParentPath:n,mediaByParentPath:this.buildMediaFilesFromEntries(e.entries)}}setManifestCache(e){return this.manifestCache=e,this.manifestCacheLoadedAt=Date.now(),this.explorerIndex=this.buildExplorerIndex(e),e}isManifestCacheStale(e){return this.manifestCache?Date.now()-this.manifestCacheLoadedAt>e:!0}buildDirectories(e){let t=new Date().toISOString(),n=new Map,r=e=>{let i=this.normalizeDirectoryPath(e);if(n.has(i))return;let a=this.getParentPath(i),o=i?i.split(`/`).pop()||i:`Entries`;n.set(i,{path:i,name:o,parentPath:a,folderCount:0,entryCount:0,updatedAt:t}),i&&r(a)};r(``);for(let t of e){let e=this.normalizeDirectoryPath(t.parentPath);r(e);let i=n.get(e);i&&(i.entryCount+=1);let a=e?[``,...e.split(`/`).map((e,t,n)=>n.slice(0,t+1).join(`/`))]:[``];for(let e of a){let r=n.get(e);r&&t.updatedAt>r.updatedAt&&(r.updatedAt=t.updatedAt)}if(t.mediaIds&&Array.isArray(t.mediaIds))for(let e of t.mediaIds){let i=this.normalizeDirectoryPath(this.getParentPath(e));r(i);let a=n.get(i);a&&(a.entryCount+=1);let o=i?[``,...i.split(`/`).map((e,t,n)=>n.slice(0,t+1).join(`/`))]:[``];for(let e of o){let r=n.get(e);r&&t.updatedAt>r.updatedAt&&(r.updatedAt=t.updatedAt)}}}for(let e of n.values()){if(!e.path)continue;let t=n.get(e.parentPath);t&&(t.folderCount+=1)}return[...n.values()].sort((e,t)=>e.path.localeCompare(t.path))}normalizeManifestEntries(e){let t=e.map(e=>{if(!e||typeof e!=`object`)return null;let t=e,n=typeof t.path==`string`?t.path:``,r=typeof t.date==`string`?t.date:``;if(!n||!r)return null;let i=this.normalizeDirectoryPath(typeof t.parentPath==`string`?t.parentPath:this.getParentPath(n));return{id:typeof t.id==`string`&&t.id?t.id:n,path:n,name:typeof t.name==`string`&&t.name?t.name:this.getEntryName(n),parentPath:i,title:Cg(typeof t.title==`string`?t.title:``,r),date:r,year:typeof t.year==`string`&&t.year?t.year:this.getYearFromDate(r),updatedAt:typeof t.updatedAt==`string`&&t.updatedAt?t.updatedAt:new Date().toISOString(),mediaIds:Array.isArray(t.mediaIds)?t.mediaIds:[]}}).filter(e=>!!e);return this.sortMetadata(t)}createManifest(e){let t=this.sortMetadata(e);return{version:3,updatedAt:new Date().toISOString(),entries:t,directories:this.buildDirectories(t)}}async readManifest(){let e=await this.storage.downloadFile(Tg);if(!e)return null;let t=await mm(this.identity.secretKey,e),n=JSON.parse(t);if(n.version!==3||!Array.isArray(n.entries))return null;let r=this.normalizeManifestEntries(n.entries);return{version:n.version||3,updatedAt:n.updatedAt||new Date().toISOString(),entries:r,directories:this.buildDirectories(r)}}async writeManifest(e){let t=this.createManifest(e),n=await pm(this.identity.publicKey,JSON.stringify(t));return await this.storage.uploadFile(Tg,n),this.setManifestCache(t)}async getManifest(e=!1){if(!e&&this.manifestCache)return this.manifestCache;if(this.manifestLoadPromise)return this.manifestLoadPromise;this.manifestLoadPromise=(async()=>{let e=await this.readManifest();if(e)return this.setManifestCache(e);let t=await this.rebuildManifest();return this.manifestCache?this.manifestCache:this.setManifestCache(this.createManifest(t))})();try{return await this.manifestLoadPromise}finally{this.manifestLoadPromise=null}}static getEntryPath(e){return`${e.split(`-`)[0]||new Date().getFullYear().toString()}/${e}.age`}async getYears(){return(await this.storage.listFiles(``)).filter(e=>/^\d{4}$/.test(e)).sort((e,t)=>t.localeCompare(e))}async getEntriesForYear(e){return(await this.storage.listFiles(e)).filter(e=>e.endsWith(`.age`)&&e!==`vault.age`).sort((e,t)=>t.localeCompare(e))}async fetchEntry(e){let t=await this.storage.downloadFile(e);if(!t)return null;let n=await mm(this.identity.secretKey,t);return JSON.parse(n)}async getEntryMetadata(){return(await this.getManifest()).entries}async getRawManifest(){return await this.getManifest()}async refreshManifestIfStale(e=Eg){return this.isManifestCacheStale(e)?(await this.getManifest(!0),!0):!1}async getDirectoryListing(e=``){let t=await this.getManifest(),n=this.explorerIndex??this.buildExplorerIndex(t);this.explorerIndex||=n;let r=this.normalizeDirectoryPath(e),i=n.knownPaths.has(r)?r:``;return{currentPath:i,folders:[...n.foldersByParentPath.get(i)??[]],entries:[...n.entriesByParentPath.get(i)??[]],media:[...n.mediaByParentPath.get(i)??[]]}}async rebuildManifest(e){e&&e(`Scanning vault for year directories...`);let t=await this.getYears(),n=[];for(let r of t){e&&e(`Listing entries for year ${r}...`);let t=await this.getEntriesForYear(r),i=0;for(let a=0;a<t.length;a+=6){let o=t.slice(a,a+6),s=await Promise.allSettled(o.map(e=>this.fetchEntry(e).then(t=>({entry:t,path:e}))));for(let e of s)i++,e.status===`fulfilled`&&e.value.entry&&n.push(this.toMetadata(e.value.entry,e.value.path));e&&e(`Decrypting entries for ${r}... (${i}/${t.length})`)}}return e&&e(`Finalizing and encrypting new manifest...`),(await this.writeManifest(n)).entries}async saveEntry(t){let n=e.getEntryPath(t.date),r=JSON.stringify(t),i=await pm(this.identity.publicKey,r);await this.storage.uploadFile(n,i);let a=(await this.getManifest()).entries.filter(e=>e.path!==n&&e.id!==t.id);return a.unshift(this.toMetadata(t,n)),await this.writeManifest(a),n}async deleteEntry(e){await this.storage.deleteFile(e);let t=(await this.getManifest()).entries.filter(t=>t.path!==e);await this.writeManifest(t)}},Og=(0,S.createContext)(null);function kg({children:e}){let t=fd(),{triggerRefresh:n}=jm(),[r,i]=(0,S.useState)(null),[a,o]=(0,S.useState)(()=>mp()),s=(0,S.useCallback)(e=>{e&&(e.onTokenRefresh=()=>n(!0)),i(e)},[n]),[c,l]=(0,S.useState)(null),[u,d]=(0,S.useState)(null),[f,p]=(0,S.useState)(null),[m,h]=(0,S.useState)(!1),[g,_]=(0,S.useState)(!1),[v,y]=(0,S.useState)(null),[b,x]=(0,S.useState)(null),[C,w]=(0,S.useState)(``),[T,E]=(0,S.useState)(``),[D,O]=(0,S.useState)(``),[k,A]=(0,S.useState)(``),[j,M]=(0,S.useState)(``),[N,ee]=(0,S.useState)(``),[te,P]=(0,S.useState)(!1),[ne,re]=(0,S.useState)(null),ie=(0,S.useRef)(Date.now()),ae=(0,S.useRef)(()=>{}),oe=(0,S.useRef)(null),[se,{open:ce,close:le}]=we(!1),[ue,de]=(0,S.useState)(30),[fe,pe]=(0,S.useState)(null),[me,he]=(0,S.useState)(Om),ge=me.status===`running`,_e=(0,S.useCallback)(e=>{p(e)},[]),ve=(0,S.useCallback)(()=>{p(null)},[]),ye=(0,S.useCallback)(e=>m?window.confirm(e):!0,[m]),be=(0,S.useCallback)(async e=>{if(!(!e||!r))try{await _g(e,r)}catch(t){console.error(`Failed to discard staged media for entry`,e,t)}},[r]),xe=(0,S.useCallback)(()=>{i(null),o(null),l(null),d(null),oe.current=null,h(!1),_(!1),y(null),x(null),w(``),E(``),O(``),A(``),M(``),ee(``),P(!1),re(null),ve(),le()},[ve,le]),Se=(0,S.useCallback)(()=>{eh(),th(),gg().catch(e=>console.error(`Failed to clear staged media on logout`,e)),bp(),xe(),t(bh.login,{replace:!0})},[t,xe]),Ce=(0,S.useCallback)(e=>{console.error(e),e instanceof vp&&Se()},[Se]);(0,S.useEffect)(()=>{let e=e=>{o(e.detail??null)};return window.addEventListener(cp,e),()=>{window.removeEventListener(cp,e)}},[]);let Te=(0,S.useCallback)(()=>{eh(),th(),gg().catch(e=>console.error(`Failed to clear staged media on vault lock`,e)),l(null),d(null),oe.current=null,ve(),le(),t(bh.unlock,{replace:!0})},[ve,le,t]);(0,S.useEffect)(()=>{ae.current=Ce},[Ce]),(0,S.useEffect)(()=>{if(!c||!r){oe.current=null;return}let e=c.identity;if(!e||u&&oe.current===e.publicKey)return;let t=!1;return(async()=>{let n=new Dg(r,e);t||(oe.current=e.publicKey,d(n),n.ensureInstructionsFile().catch(e=>console.error(`Failed to backfill instructions file:`,e)))})().catch(e=>ae.current(e)),()=>{t=!0}},[r,u,c]),(0,S.useEffect)(()=>{h(v!==null&&(C!==k||T!==j||D!==N))},[v,C,k,T,j,D,N]),(0,S.useEffect)(()=>{let e=e=>{(m||ge)&&(e.preventDefault(),e.returnValue=m?`You have unsaved changes. Are you sure you want to leave?`:`A PDF export is in progress. Leaving will cancel it.`)};return window.addEventListener(`beforeunload`,e),()=>window.removeEventListener(`beforeunload`,e)},[m,ge]),(0,S.useEffect)(()=>{let e=null,t=()=>{e||=(ie.current=Date.now(),setTimeout(()=>{e=null},1e3))},n=[`mousemove`,`keydown`,`touchstart`,`scroll`];return n.forEach(e=>window.addEventListener(e,t,{passive:!0})),()=>{n.forEach(e=>window.removeEventListener(e,t)),e&&clearTimeout(e)}},[]),(0,S.useEffect)(()=>{if(!c)return;let e=setInterval(()=>{let e=Date.now()-ie.current;e>=9.5*60*1e3&&e<600*1e3?(de(Math.ceil((600*1e3-e)/1e3)),se||ce()):e>=600*1e3&&Te()},1e3);return()=>clearInterval(e)},[se,ce,Te,c]),(0,S.useEffect)(()=>{let e=()=>{!u||!c||u.refreshManifestIfStale().catch(e=>{console.error(`Failed to refresh manifest after focus`,e)})},t=()=>{if(document.visibilityState===`visible`){if(Date.now()-ie.current>=600*1e3&&c){Te();return}e()}},n=()=>{document.visibilityState===`visible`&&e()};return document.addEventListener(`visibilitychange`,t),window.addEventListener(`focus`,n),()=>{document.removeEventListener(`visibilitychange`,t),window.removeEventListener(`focus`,n)}},[Te,u,c]);let Ee=(0,S.useCallback)(()=>v&&!te?wh(v):bh.editor,[v,te]),De=(0,S.useRef)(!1),Oe={storage:r,setStorage:s,userProfile:a,setUserProfile:o,vaultManager:c,setVaultManager:l,syncEngine:u,currentSessionAuthMethod:f,setSessionAuthContext:_e,clearSessionAuthContext:ve,isDirty:m,setIsDirty:h,isSaving:g,setIsSaving:_,activeEntryPath:v,setActiveEntryPath:y,activeEntryId:b,setActiveEntryId:x,editorTitle:C,setEditorTitle:w,editorContent:T,setEditorContent:E,editorDate:D,setEditorDate:O,initialEditorTitle:k,setInitialEditorTitle:A,initialEditorContent:j,setInitialEditorContent:M,initialEditorDate:N,setInitialEditorDate:ee,isDraftMode:te,setIsDraftMode:P,sessionEditableEntryPath:ne,setSessionEditableEntryPath:re,confirmDiscardChanges:ye,discardStagedForEntry:be,handleAuthFailure:Ce,handleLogout:Se,performVaultLock:Te,getResumeRoute:Ee,triggerManifestRepair:(0,S.useCallback)(async()=>{if(!(!u||De.current)){De.current=!0,pe(`Preparing to rebuild manifest...`);try{await u.rebuildManifest(e=>pe(e))}catch(e){console.error(`Failed to rebuild manifest`,e)}finally{pe(null),De.current=!1}}},[u]),exportJobState:me,setExportJobState:he,isExportRunning:ge};return(0,L.jsxs)(Og.Provider,{value:Oe,children:[e,(0,L.jsxs)(G,{opened:se,onClose:()=>{},title:`Inactivity Warning`,centered:!0,closeOnClickOutside:!1,closeOnEscape:!1,withCloseButton:!1,children:[(0,L.jsxs)(nl,{mb:`md`,children:[`Your vault will lock automatically in `,(0,L.jsxs)(`b`,{children:[ue,` seconds`]}),` due to inactivity.`]}),(0,L.jsx)(nl,{size:`sm`,c:`dimmed`,mb:`lg`,children:`Unsaved changes will be preserved in memory and restored when you unlock.`}),(0,L.jsxs)(xs,{justify:`flex-end`,children:[(0,L.jsx)(dl,{color:`gray`,variant:`light`,onClick:Te,children:`Lock Now`}),(0,L.jsx)(dl,{onClick:()=>{ie.current=Date.now(),le()},children:`Continue Session`})]})]}),(0,L.jsx)(G,{opened:!!fe,onClose:()=>{},title:`Repairing Vault Manifest`,centered:!0,closeOnClickOutside:!1,closeOnEscape:!1,withCloseButton:!1,overlayProps:{blur:3},children:(0,L.jsxs)(bl,{style:{flexDirection:`column`},mt:`md`,mb:`xl`,children:[(0,L.jsx)(ds,{size:`lg`,mb:`md`}),(0,L.jsx)(nl,{fw:500,children:fe}),(0,L.jsxs)(nl,{size:`sm`,c:`dimmed`,mt:`xs`,children:[`Please remain on this screen while we're rebuilding your vault manifest. `,(0,L.jsx)(`br`,{}),` While we can repair the manifest agains missing files, we're not able to repair broken files. If any file is corrupted/modified outside the applicaiton, that data is lost.`]})]})})]})}function Ag(){let e=(0,S.useContext)(Og);if(!e)throw Error(`useAppContext must be used within an AppProvider`);return e}export{Ud as $,zt as $t,nh as A,ve as An,wo as At,Em as B,D as Bn,ja as Bt,vh as C,Oe as Cn,Bo as Ct,dh as D,xe as Dn,go as Dt,ph as E,Ce as En,ho as Et,sh as F,j as Fn,Na as Ft,Sp as G,v as Gn,Sn as Gt,bm as H,w as Hn,pa as Ht,km as I,A as In,Fa as It,rp as J,f as Jn,B as Jt,vp as K,_ as Kn,V as Kt,Mm as L,N as Ln,Ia as Lt,yh as M,oe as Mn,Eo as Mt,uh as N,ae as Nn,Oo as Nt,ih as O,Se as On,bo as Ot,fh as P,ee as Pn,La as Pt,Vd as Q,l as Qn,cn as Qt,jm as R,O as Rn,Ma as Rt,lh as S,F as Sn,Wo as St,hh as T,we as Tn,jo as Tt,mm as U,C as Un,xr as Ut,wm as V,E as Vn,Pa as Vt,pm as W,x as Wn,Ln as Wt,zd as X,o as Xn,dn as Xt,jf as Y,u as Yn,pn as Yt,Bd as Z,s as Zn,ln as Zt,wh as _,We as _n,gs as _t,wg as a,pt as an,G as at,_h as b,Me as bn,ts as bt,vg as c,Ze as cn,dl as ct,lg as d,ot as dn,Os as dt,Rt as en,Y as et,ug as f,tt as fn,As as ft,Dh as g,Ge as gn,xs as gt,bh as h,Ke as hn,ks as ht,Sg as i,xt as in,zl as it,ch as j,se as jn,uo as jt,ah as k,ye as kn,So as kt,mg as l,Qe as ln,nl as lt,cg as m,Je as mn,js as mt,Ag as n,R as nn,Xl as nt,xg as o,ut as on,bl as ot,fg as p,Ye as pn,Ds as pt,ip as q,g as qn,mn as qt,Dg as r,St as rn,Kl as rt,Cg as s,ct as sn,vl as st,kg as t,z as tn,fd as tt,hg as u,$e as un,Rc as ut,Eh as v,Pe as vn,ds as vt,gh as w,Ee as wn,Fo as wt,mh as x,I as xn,Yo as xt,Ch as y,Ne as yn,ns as yt,Om as z,k as zn,Aa as zt};
+`,Cm=`@echo off
+REM =============================================================================
+REM Silent Memoirs — Vault Decryption Launcher (Windows)
+REM =============================================================================
+REM This wrapper launches the PowerShell decryption script with the execution
+REM policy bypassed for this process only. This avoids the "not digitally signed"
+REM error without modifying your system-wide settings.
+REM
+REM Usage: Double-click this file, or run in a terminal:
+REM   .\\Decrypt-Vault.cmd
+REM =============================================================================
+
+REM Prefer PowerShell 7+ (pwsh.exe) if available, fall back to PowerShell 5.1
+where pwsh >nul 2>nul
+if %ERRORLEVEL% equ 0 (
+    pwsh.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Decrypt-Vault.ps1"
+) else (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Decrypt-Vault.ps1"
+)
+pause
+`,wm=`vault_key.age`,Tm=class{storage;currentIdentity=null;unlockedViaRecovery=!1;constructor(e){this.storage=e}get identity(){return this.currentIdentity}get wasUnlockedWithRecoveryKey(){return this.unlockedViaRecovery}async loadVaultPublicKey(){let e=await this.storage.downloadFile(`vault_pub.txt`);if(!e)throw Error(`Vault public key file is missing.`);return new TextDecoder().decode(e).trim()}async validateRecoveryKey(e,t){let n=`recovery-check-${dm(crypto.getRandomValues(new Uint8Array(16)))}`;try{if(await mm(e,await pm(t,n))!==n)throw Error(`Recovery key does not match vault identity.`)}catch{throw Error(`Recovery key is invalid for this vault.`)}}async isVaultInitialized(){return(await this.storage.listFiles(``)).includes(wm)}async unlockVault(e){let t=e.trim();if(!t)throw Error(`Password is required to unlock your vault.`);let n=await ym(t),r=await this.storage.downloadFile(wm);if(!r)throw Error(`Vault key file is missing from remote storage.`);let i=``;try{i=await _m(n,r)}catch{throw Error(`Unable to unlock vault. Your password may be incorrect. If you forgot it, use Recovery Key unlock.`)}return this.currentIdentity={publicKey:await this.loadVaultPublicKey(),secretKey:i.trim()},this.unlockedViaRecovery=!1,{method:`password`,slotId:null,label:`Password`}}async unlockVaultWithRecoveryKey(e){let t=e.trim().toUpperCase();if(!t)throw Error(`Recovery key is required to unlock your vault.`);if(!t.startsWith(`AGE-SECRET-KEY-`))throw Error(`Recovery key format looks invalid. Please paste the full key exactly as provided.`);let n=await this.loadVaultPublicKey();return await this.validateRecoveryKey(t,n),this.currentIdentity={publicKey:n,secretKey:t},this.unlockedViaRecovery=!0,{method:`recovery-key`,slotId:null,label:`Recovery Key`}}async setNewPasswordAfterRecovery(e){if(!this.currentIdentity)throw Error(`Vault must be unlocked before resetting the password.`);if(!this.unlockedViaRecovery)throw Error(`Password reset via recovery is only available immediately after recovery-key unlock.`);let t=e.trim();if(!t)throw Error(`Please provide a new password.`);let n=await gm(await ym(t),this.currentIdentity.secretKey);await this.storage.uploadFile(wm,n),this.unlockedViaRecovery=!1}async initializeVault(e){let t=e.trim();if(!t)throw Error(`Password is required to create your vault.`);let n=await ym(t),r=await fm(),i=await gm(n,r.secretKey);await this.storage.uploadFile(wm,i),await this.storage.uploadFile(`vault_pub.txt`,new TextEncoder().encode(r.publicKey),`text/plain`);try{await this.storage.uploadFile(`README-Silent-Memoirs.txt`,new TextEncoder().encode(bm),`text/plain`),await this.storage.uploadFile(`decrypt-vault.sh`,new TextEncoder().encode(xm),`text/plain`),await this.storage.uploadFile(`Decrypt-Vault.ps1`,new TextEncoder().encode(Sm),`text/plain`),await this.storage.uploadFile(`Decrypt-Vault.cmd`,new TextEncoder().encode(Cm),`text/plain`),await this.storage.uploadFile(`.vault-utils-version`,new TextEncoder().encode(`1.1.0`),`text/plain`)}catch{throw Error(`Failed to upload vault instructions file. Vault initialization aborted.`)}return this.currentIdentity=r,this.unlockedViaRecovery=!1,{recoveryKey:r.secretKey}}},Em={outline:{xmlns:`http://www.w3.org/2000/svg`,width:24,height:24,viewBox:`0 0 24 24`,fill:`none`,stroke:`currentColor`,strokeWidth:2,strokeLinecap:`round`,strokeLinejoin:`round`},filled:{xmlns:`http://www.w3.org/2000/svg`,width:24,height:24,viewBox:`0 0 24 24`,fill:`currentColor`,stroke:`none`}},Dm=(e,t,n,r)=>{let i=(0,S.forwardRef)(({color:n=`currentColor`,size:i=24,stroke:a=2,title:o,className:s,children:c,...l},u)=>(0,S.createElement)(`svg`,{ref:u,...Em[e],width:i,height:i,className:[`tabler-icon`,`tabler-icon-${t}`,s].join(` `),...e===`filled`?{fill:n}:{strokeWidth:a,stroke:n},...l},[o&&(0,S.createElement)(`title`,{key:`svg-title`},o),...r.map(([e,t])=>(0,S.createElement)(e,t)),...Array.isArray(c)?c:[c]]));return i.displayName=`${n}`,i},Om=Dm(`outline`,`brand-google`,`BrandGoogle`,[[`path`,{d:`M20.945 11a9 9 0 1 1 -3.284 -5.997l-2.655 2.392a5.5 5.5 0 1 0 2.119 6.605h-4.125v-3h7.945`,key:`svg-0`}]]),km={status:`idle`},Am=3e3*1e3,jm=(0,S.createContext)(null);function Mm(){let e=(0,S.useContext)(jm);if(!e)throw Error(`useSessionManager must be used within SessionProvider`);return e}function Nm({children:e}){let[t,n]=(0,S.useState)(!1),[r,i]=(0,S.useState)(!1),[a,o]=(0,S.useState)(()=>{let e=localStorage.getItem(`token_issued_at`);return e?parseInt(e,10):null}),s=(0,S.useRef)([]),c=()=>`242891391052-h1n8qvad6v9a83j2ah23kp3g2mms35ik.apps.googleusercontent.com`,l=e=>new Promise((t,n)=>{try{if(!window.google?.accounts?.oauth2){n(Error(`Google Identity Services script not loaded`));return}window.google.accounts.oauth2.initTokenClient({client_id:c(),scope:ap,prompt:e?``:`consent`,callback:async e=>{if(e.error){n(Error(e.error));return}if(e.access_token){let n=Date.now();localStorage.setItem(`google_access_token`,e.access_token),localStorage.setItem(`token_issued_at`,n.toString()),o(n),_p(n);try{hp(await pp(e.access_token))}catch(e){console.warn(`Unable to refresh Google user profile.`,e)}t(e.access_token)}else n(Error(`No access token returned`))}}).requestAccessToken({prompt:e?``:`consent`})}catch(e){n(e)}}),u=(e,t)=>{s.current.forEach(({resolve:n,reject:r})=>{e?r(e):t&&n(t)}),s.current=[],n(!1),i(!1)},d=async e=>{if(i(!0),e)try{u(null,await l(!0));return}catch(e){console.warn(`Silent refresh failed, requiring user interaction:`,e)}n(!0)},f=e=>{let t=new Promise((e,t)=>{s.current.push({resolve:e,reject:t})});return s.current.length===1&&d(e),t};return(0,S.useEffect)(()=>{if(!a)return;let e=setInterval(()=>{Date.now()-a>=3e6&&s.current.length===0&&f(!0).catch(e=>console.error(`Auto pre-emptive refresh failed`,e))},1e4);return()=>clearInterval(e)},[a]),(0,S.useEffect)(()=>{let e=e=>{e.key===`token_issued_at`&&e.newValue?o(parseInt(e.newValue,10)):e.key===`token_issued_at`&&!e.newValue&&o(null)},t=e=>{let t=e;typeof t.detail==`number`&&o(t.detail)};return window.addEventListener(`storage`,e),window.addEventListener(sp,t),()=>{window.removeEventListener(`storage`,e),window.removeEventListener(sp,t)}},[]),(0,L.jsxs)(jm.Provider,{value:{triggerRefresh:f,tokenIssuedAt:a},children:[e,(0,L.jsx)(G,{opened:t,onClose:()=>{},centered:!0,closeOnClickOutside:!1,closeOnEscape:!1,withCloseButton:!1,title:(0,L.jsx)(Kl,{order:4,c:`red.6`,children:`Session Re-authentication Required`}),children:(0,L.jsxs)(zl,{gap:`md`,py:`xs`,children:[(0,L.jsx)(nl,{size:`sm`,children:`Due to privacy and browser policies, we could not silently renew your Google Drive connection. Your current sync operation has been paused.`}),(0,L.jsx)(nl,{size:`sm`,fw:500,children:`Please explicitly reconnect to resume smoothly. Your unsaved entry text is safe and will automatically sync once authorized.`}),(0,L.jsx)(dl,{className:`mt-4`,size:`md`,variant:`filled`,color:`red.7`,leftSection:(0,L.jsx)(Om,{size:20}),loading:r&&!t,onClick:async()=>{try{u(null,await l(!1))}catch(e){console.error(`Manual reconnect failed`,e)}},children:`Reconnect Google Drive`})]})})]})}var Pm=1e6,Fm=1440,Im=20,Lm=[`png`,`webp`,`jpg`,`jpeg`,`avif`],Rm={png:`image/png`,webp:`image/webp`,jpg:`image/jpeg`,jpeg:`image/jpeg`,avif:`image/avif`},zm=new Map([[`image/png`,`png`],[`image/webp`,`webp`],[`image/jpeg`,`jpg`],[`image/jpg`,`jpg`],[`image/avif`,`avif`]]),Bm=/^\d{4}\/media\/\d{4}-\d{2}-\d{2}_\d{2}-\d{2}(?:-\d{2})?\.(png|webp|jpg|jpeg|avif)$/i,Vm=/^pending-media:\/\/([0-9a-fA-F-]{36})$/,Hm=new Map,Um=new Map;function Wm(e){return e.toString().padStart(2,`0`)}function Gm(e){return`${e.getFullYear()}-${Wm(e.getMonth()+1)}-${Wm(e.getDate())}_${Wm(e.getHours())}-${Wm(e.getMinutes())}`}function Km(e){if(!e)return null;let t=/^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})$/.exec(e.trim());if(!t)return null;let[,n,r,i,a,o]=t,s=new Date(Number(n),Number(r)-1,Number(i),Number(a),Number(o),0,0);return Number.isNaN(s.getTime())?null:s}function qm(e){let t=Km(e)??new Date;return{year:String(t.getFullYear()),date:t}}function Jm(e){let t=e.split(`/`);return t[t.length-1]??e}function Ym(e,t,n=.92){return new Promise((r,i)=>{e.toBlob(e=>{if(!e){i(Error(`Unable to encode image blob.`));return}r(e)},t,n)})}function Xm(e){return new Promise((t,n)=>{let r=new Image;r.onload=()=>t(r),r.onerror=()=>n(Error(`Unable to decode image.`)),r.src=e})}function Zm(e){return e.trim().replace(/^<|>$/g,``)}function Qm(e){let t=new Uint8Array(e.byteLength);return t.set(e),t}function $m(e){let t=Hm.get(e);return t?(Hm.delete(e),Hm.set(e,t),{bytes:Qm(t.bytes),mimeType:t.mimeType}):null}function eh(e,t,n){for(Hm.has(e)&&Hm.delete(e),Hm.set(e,{mimeType:t,bytes:Qm(n)});Hm.size>Im;){let e=Hm.keys().next().value;if(!e)break;Hm.delete(e)}}function th(){Hm.clear()}function nh(){Um.clear()}function rh(){return Lm.map(e=>`.${e}`).join(`,`)}function ih(e){let t=e.trim().toLowerCase();return Lm.includes(t)}function ah(e){return Rm[e]}function oh(e){let t=e.split(`.`).pop();return!t||!ih(t.toLowerCase())?null:Rm[t.toLowerCase()]}function sh(e){return zm.get(e.trim().toLowerCase())??null}function ch(e,t){let n=sh(t);if(n)return n;let r=e.split(`.`).pop();if(!r)return null;let i=r.toLowerCase();return ih(i)?i:null}function lh(e){return Bm.test(e.trim())}function uh(e){return`pending-media://${e}`}function dh(e){let t=Vm.exec(e.trim());return t?t[1]:null}function fh(e){let t=e.matchAll(/!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g),n=new Set;for(let e of t){let t=e[1];if(!t)continue;let r=dh(Zm(t));r&&n.add(r)}return[...n]}function ph(e,t){return t.size===0?e:e.replace(/!\[([^\]]*)\]\(([^)\s]+)(\s+"[^"]*")?\)/g,(e,n,r,i)=>{let a=dh(Zm(r));if(!a)return e;let o=t.get(a);return o?`![${n}](${o}${i??``})`:e})}function mh(e){let t=e.matchAll(/!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g),n=new Set;for(let e of t){let t=e[1];if(!t)continue;let r=Zm(t);lh(r)&&n.add(r)}return[...n]}function hh(e,t=[]){let{year:n,date:r}=qm(e),i=`${n}/media`,a=Gm(r),o=new Set(t.map(Jm));return{directoryPath:i,nextPath:e=>{let t=`${i}/${a}.${e}`,n=Um.get(t)??0;for(;;){let r=n===0?`${a}.${e}`:`${a}-${Wm(n)}.${e}`;if(!o.has(r))return o.add(r),Um.set(t,n+1),`${i}/${r}`;n+=1}}}}async function gh(e,t,n,r){let i=await pm(t,r);await e.uploadFile(n,i)}async function _h(e,t,n){let r=$m(n);if(r)return r.bytes;let i=await e.downloadFile(n);if(!i)throw Error(`Image not found in vault storage.`);let a=await hm(t,i);return eh(n,oh(n)??`application/octet-stream`,a),Qm(a)}async function vh(e){let t=await e.arrayBuffer();return new Uint8Array(t)}async function yh(e,t,n){let r=await Xm(e),i=Math.max(0,Math.floor(t.x)),a=Math.max(0,Math.floor(t.y)),o=Math.max(1,Math.floor(t.width)),s=Math.max(1,Math.floor(t.height)),c=document.createElement(`canvas`);c.width=o,c.height=s;let l=c.getContext(`2d`);if(!l)throw Error(`Unable to initialize canvas rendering context.`);return l.drawImage(r,i,a,o,s,0,0,o,s),Ym(c,n)}async function bh(e,t){if(e.size<Pm)return e;let n=URL.createObjectURL(e);try{let r=await Xm(n),i=r.naturalWidth,a=r.naturalHeight,o=Math.min(i,a);if(o<=Fm)return e;let s=Fm/o,c=Math.max(1,Math.round(i*s)),l=Math.max(1,Math.round(a*s)),u=document.createElement(`canvas`);u.width=c,u.height=l;let d=u.getContext(`2d`);if(!d)throw Error(`Unable to initialize canvas rendering context.`);return d.drawImage(r,0,0,i,a,0,0,c,l),Ym(u,t)}finally{URL.revokeObjectURL(n)}}var xh={login:`/login`,unlock:`/unlock`,editor:`/editor`,entries:`/entries`,viewer:`/viewer`,settings:`/settings`,emotionbook:`/emotionbook`};function Sh(e){return e?e.split(`/`).filter(Boolean).join(`/`):``}function Ch(e){return encodeURIComponent(e)}function wh(e){if(!e)return null;try{return decodeURIComponent(e)}catch{return null}}function Th(e){return`${xh.viewer}?e=${Ch(e)}`}function Eh(e){return encodeURIComponent(Sh(e))}function Dh(e){if(!e)return``;try{return Sh(decodeURIComponent(e))}catch{return``}}function Oh(e){let t=Sh(e);return t?`${xh.entries}?dir=${Eh(t)}`:xh.entries}var kh=(e,t)=>t.some(t=>e instanceof t),Ah,jh;function Mh(){return Ah||=[IDBDatabase,IDBObjectStore,IDBIndex,IDBCursor,IDBTransaction]}function Nh(){return jh||=[IDBCursor.prototype.advance,IDBCursor.prototype.continue,IDBCursor.prototype.continuePrimaryKey]}var Ph=new WeakMap,Fh=new WeakMap,Ih=new WeakMap;function Lh(e){let t=new Promise((t,n)=>{let r=()=>{e.removeEventListener(`success`,i),e.removeEventListener(`error`,a)},i=()=>{t(Uh(e.result)),r()},a=()=>{n(e.error),r()};e.addEventListener(`success`,i),e.addEventListener(`error`,a)});return Ih.set(t,e),t}function Rh(e){if(Ph.has(e))return;let t=new Promise((t,n)=>{let r=()=>{e.removeEventListener(`complete`,i),e.removeEventListener(`error`,a),e.removeEventListener(`abort`,a)},i=()=>{t(),r()},a=()=>{n(e.error||new DOMException(`AbortError`,`AbortError`)),r()};e.addEventListener(`complete`,i),e.addEventListener(`error`,a),e.addEventListener(`abort`,a)});Ph.set(e,t)}var zh={get(e,t,n){if(e instanceof IDBTransaction){if(t===`done`)return Ph.get(e);if(t===`store`)return n.objectStoreNames[1]?void 0:n.objectStore(n.objectStoreNames[0])}return Uh(e[t])},set(e,t,n){return e[t]=n,!0},has(e,t){return e instanceof IDBTransaction&&(t===`done`||t===`store`)?!0:t in e}};function Bh(e){zh=e(zh)}function Vh(e){return Nh().includes(e)?function(...t){return e.apply(Wh(this),t),Uh(this.request)}:function(...t){return Uh(e.apply(Wh(this),t))}}function Hh(e){return typeof e==`function`?Vh(e):(e instanceof IDBTransaction&&Rh(e),kh(e,Mh())?new Proxy(e,zh):e)}function Uh(e){if(e instanceof IDBRequest)return Lh(e);if(Fh.has(e))return Fh.get(e);let t=Hh(e);return t!==e&&(Fh.set(e,t),Ih.set(t,e)),t}var Wh=e=>Ih.get(e);function Gh(e,t,{blocked:n,upgrade:r,blocking:i,terminated:a}={}){let o=indexedDB.open(e,t),s=Uh(o);return r&&o.addEventListener(`upgradeneeded`,e=>{r(Uh(o.result),e.oldVersion,e.newVersion,Uh(o.transaction),e)}),n&&o.addEventListener(`blocked`,e=>n(e.oldVersion,e.newVersion,e)),s.then(e=>{a&&e.addEventListener(`close`,()=>a()),i&&e.addEventListener(`versionchange`,e=>i(e.oldVersion,e.newVersion,e))}).catch(()=>{}),s}var Kh=[`get`,`getKey`,`getAll`,`getAllKeys`,`count`],qh=[`put`,`add`,`delete`,`clear`],Jh=new Map;function Yh(e,t){if(!(e instanceof IDBDatabase&&!(t in e)&&typeof t==`string`))return;if(Jh.get(t))return Jh.get(t);let n=t.replace(/FromIndex$/,``),r=t!==n,i=qh.includes(n);if(!(n in(r?IDBIndex:IDBObjectStore).prototype)||!(i||Kh.includes(n)))return;let a=async function(e,...t){let a=this.transaction(e,i?`readwrite`:`readonly`),o=a.store;return r&&(o=o.index(t.shift())),(await Promise.all([o[n](...t),i&&a.done]))[0]};return Jh.set(t,a),a}Bh(e=>({...e,get:(t,n,r)=>Yh(t,n)||e.get(t,n,r),has:(t,n)=>!!Yh(t,n)||e.has(t,n)}));var Xh=[`continue`,`continuePrimaryKey`,`advance`],Zh={},Qh=new WeakMap,$h=new WeakMap,eg={get(e,t){if(!Xh.includes(t))return e[t];let n=Zh[t];return n||=Zh[t]=function(...e){Qh.set(this,$h.get(this)[t](...e))},n}};async function*tg(...e){let t=this;if(t instanceof IDBCursor||(t=await t.openCursor(...e)),!t)return;t=t;let n=new Proxy(t,eg);for($h.set(n,t),Ih.set(n,Wh(t));t;)yield n,t=await(Qh.get(n)||t.continue()),Qh.delete(n)}function ng(e,t){return t===Symbol.asyncIterator&&kh(e,[IDBIndex,IDBObjectStore,IDBCursor])||t===`iterate`&&kh(e,[IDBIndex,IDBObjectStore])}Bh(e=>({...e,get(t,n,r){return ng(t,n)?tg:e.get(t,n,r)},has(t,n){return ng(t,n)||e.has(t,n)}}));var rg=`silent-memoirs-staged-media`,ig=1,ag=`staged-media`,og=`by-entry-key`,sg=null;function cg(){return sg||=Gh(rg,ig,{upgrade(e){e.createObjectStore(ag,{keyPath:`pendingId`}).createIndex(og,`entryKey`,{unique:!1})}}),sg}async function lg(e){let t=await cg(),n=Date.now(),r={pendingId:crypto.randomUUID(),entryKey:e.entryKey,fileName:e.fileName,mimeType:e.mimeType,extension:e.extension,blob:e.blob,createdAt:n,updatedAt:n,uploadedPath:null};return await t.put(ag,r),r}async function ug(e){return await(await cg()).get(ag,e)??null}async function dg(e){let t=await cg(),n=await Promise.all(e.map(e=>t.get(ag,e))),r=new Map;return n.forEach(e=>{e&&r.set(e.pendingId,e)}),r}async function fg(e){return(await cg()).getAllFromIndex(ag,og,e)}async function pg(e,t){let n=await cg(),r=await n.get(ag,e);r&&await n.put(ag,{...r,uploadedPath:t,updatedAt:Date.now()})}async function mg(e){if(e.length===0)return;let t=(await cg()).transaction(ag,`readwrite`);await Promise.all(e.map(e=>t.store.delete(e))),await t.done}async function hg(e){let t=(await cg()).transaction(ag,`readwrite`),n=await t.store.index(og).getAllKeys(e);await Promise.all(n.map(e=>t.store.delete(e))),await t.done}async function gg(e,t,n){let r=(await fg(e)).filter(e=>!t.has(e.pendingId)),i=r.map(e=>e.pendingId);if(n){for(let e of r)if(e.uploadedPath)try{await n.deleteFile(e.uploadedPath)}catch(t){console.error(`Failed to remove uploaded staged media while pruning unreferenced placeholders`,e.uploadedPath,t)}}await mg(i)}async function _g(){await(await cg()).clear(ag)}async function vg(e,t){let n=await fg(e);for(let e of n)if(e.uploadedPath)try{await t.deleteFile(e.uploadedPath)}catch(t){console.error(`Failed to remove staged uploaded media file during discard`,e.uploadedPath,t)}await hg(e)}var yg=o(((e,t)=>{(function(n,r){typeof e==`object`&&t!==void 0?t.exports=r():typeof define==`function`&&define.amd?define(r):(n=typeof globalThis<`u`?globalThis:n||self).dayjs=r()})(e,(function(){var e=1e3,t=6e4,n=36e5,r=`millisecond`,i=`second`,a=`minute`,o=`hour`,s=`day`,c=`week`,l=`month`,u=`quarter`,d=`year`,f=`date`,p=`Invalid Date`,m=/^(\d{4})[-/]?(\d{1,2})?[-/]?(\d{0,2})[Tt\s]*(\d{1,2})?:?(\d{1,2})?:?(\d{1,2})?[.:]?(\d+)?$/,h=/\[([^\]]+)]|Y{1,4}|M{1,4}|D{1,2}|d{1,4}|H{1,2}|h{1,2}|a|A|m{1,2}|s{1,2}|Z{1,2}|SSS/g,g={name:`en`,weekdays:`Sunday_Monday_Tuesday_Wednesday_Thursday_Friday_Saturday`.split(`_`),months:`January_February_March_April_May_June_July_August_September_October_November_December`.split(`_`),ordinal:function(e){var t=[`th`,`st`,`nd`,`rd`],n=e%100;return`[`+e+(t[(n-20)%10]||t[n]||t[0])+`]`}},_=function(e,t,n){var r=String(e);return!r||r.length>=t?e:``+Array(t+1-r.length).join(n)+e},v={s:_,z:function(e){var t=-e.utcOffset(),n=Math.abs(t),r=Math.floor(n/60),i=n%60;return(t<=0?`+`:`-`)+_(r,2,`0`)+`:`+_(i,2,`0`)},m:function e(t,n){if(t.date()<n.date())return-e(n,t);var r=12*(n.year()-t.year())+(n.month()-t.month()),i=t.clone().add(r,l),a=n-i<0,o=t.clone().add(r+(a?-1:1),l);return+(-(r+(n-i)/(a?i-o:o-i))||0)},a:function(e){return e<0?Math.ceil(e)||0:Math.floor(e)},p:function(e){return{M:l,y:d,w:c,d:s,D:f,h:o,m:a,s:i,ms:r,Q:u}[e]||String(e||``).toLowerCase().replace(/s$/,``)},u:function(e){return e===void 0}},y=`en`,b={};b[y]=g;var x=`$isDayjsObject`,S=function(e){return e instanceof E||!(!e||!e[x])},C=function e(t,n,r){var i;if(!t)return y;if(typeof t==`string`){var a=t.toLowerCase();b[a]&&(i=a),n&&(b[a]=n,i=a);var o=t.split(`-`);if(!i&&o.length>1)return e(o[0])}else{var s=t.name;b[s]=t,i=s}return!r&&i&&(y=i),i||!r&&y},w=function(e,t){if(S(e))return e.clone();var n=typeof t==`object`?t:{};return n.date=e,n.args=arguments,new E(n)},T=v;T.l=C,T.i=S,T.w=function(e,t){return w(e,{locale:t.$L,utc:t.$u,x:t.$x,$offset:t.$offset})};var E=function(){function g(e){this.$L=C(e.locale,null,!0),this.parse(e),this.$x=this.$x||e.x||{},this[x]=!0}var _=g.prototype;return _.parse=function(e){this.$d=function(e){var t=e.date,n=e.utc;if(t===null)return new Date(NaN);if(T.u(t))return new Date;if(t instanceof Date)return new Date(t);if(typeof t==`string`&&!/Z$/i.test(t)){var r=t.match(m);if(r){var i=r[2]-1||0,a=(r[7]||`0`).substring(0,3);return n?new Date(Date.UTC(r[1],i,r[3]||1,r[4]||0,r[5]||0,r[6]||0,a)):new Date(r[1],i,r[3]||1,r[4]||0,r[5]||0,r[6]||0,a)}}return new Date(t)}(e),this.init()},_.init=function(){var e=this.$d;this.$y=e.getFullYear(),this.$M=e.getMonth(),this.$D=e.getDate(),this.$W=e.getDay(),this.$H=e.getHours(),this.$m=e.getMinutes(),this.$s=e.getSeconds(),this.$ms=e.getMilliseconds()},_.$utils=function(){return T},_.isValid=function(){return this.$d.toString()!==p},_.isSame=function(e,t){var n=w(e);return this.startOf(t)<=n&&n<=this.endOf(t)},_.isAfter=function(e,t){return w(e)<this.startOf(t)},_.isBefore=function(e,t){return this.endOf(t)<w(e)},_.$g=function(e,t,n){return T.u(e)?this[t]:this.set(n,e)},_.unix=function(){return Math.floor(this.valueOf()/1e3)},_.valueOf=function(){return this.$d.getTime()},_.startOf=function(e,t){var n=this,r=!!T.u(t)||t,u=T.p(e),p=function(e,t){var i=T.w(n.$u?Date.UTC(n.$y,t,e):new Date(n.$y,t,e),n);return r?i:i.endOf(s)},m=function(e,t){return T.w(n.toDate()[e].apply(n.toDate(`s`),(r?[0,0,0,0]:[23,59,59,999]).slice(t)),n)},h=this.$W,g=this.$M,_=this.$D,v=`set`+(this.$u?`UTC`:``);switch(u){case d:return r?p(1,0):p(31,11);case l:return r?p(1,g):p(0,g+1);case c:var y=this.$locale().weekStart||0,b=(h<y?h+7:h)-y;return p(r?_-b:_+(6-b),g);case s:case f:return m(v+`Hours`,0);case o:return m(v+`Minutes`,1);case a:return m(v+`Seconds`,2);case i:return m(v+`Milliseconds`,3);default:return this.clone()}},_.endOf=function(e){return this.startOf(e,!1)},_.$set=function(e,t){var n,c=T.p(e),u=`set`+(this.$u?`UTC`:``),p=(n={},n[s]=u+`Date`,n[f]=u+`Date`,n[l]=u+`Month`,n[d]=u+`FullYear`,n[o]=u+`Hours`,n[a]=u+`Minutes`,n[i]=u+`Seconds`,n[r]=u+`Milliseconds`,n)[c],m=c===s?this.$D+(t-this.$W):t;if(c===l||c===d){var h=this.clone().set(f,1);h.$d[p](m),h.init(),this.$d=h.set(f,Math.min(this.$D,h.daysInMonth())).$d}else p&&this.$d[p](m);return this.init(),this},_.set=function(e,t){return this.clone().$set(e,t)},_.get=function(e){return this[T.p(e)]()},_.add=function(r,u){var f,p=this;r=Number(r);var m=T.p(u),h=function(e){var t=w(p);return T.w(t.date(t.date()+Math.round(e*r)),p)};if(m===l)return this.set(l,this.$M+r);if(m===d)return this.set(d,this.$y+r);if(m===s)return h(1);if(m===c)return h(7);var g=(f={},f[a]=t,f[o]=n,f[i]=e,f)[m]||1,_=this.$d.getTime()+r*g;return T.w(_,this)},_.subtract=function(e,t){return this.add(-1*e,t)},_.format=function(e){var t=this,n=this.$locale();if(!this.isValid())return n.invalidDate||p;var r=e||`YYYY-MM-DDTHH:mm:ssZ`,i=T.z(this),a=this.$H,o=this.$m,s=this.$M,c=n.weekdays,l=n.months,u=n.meridiem,d=function(e,n,i,a){return e&&(e[n]||e(t,r))||i[n].slice(0,a)},f=function(e){return T.s(a%12||12,e,`0`)},m=u||function(e,t,n){var r=e<12?`AM`:`PM`;return n?r.toLowerCase():r};return r.replace(h,(function(e,r){return r||function(e){switch(e){case`YY`:return String(t.$y).slice(-2);case`YYYY`:return T.s(t.$y,4,`0`);case`M`:return s+1;case`MM`:return T.s(s+1,2,`0`);case`MMM`:return d(n.monthsShort,s,l,3);case`MMMM`:return d(l,s);case`D`:return t.$D;case`DD`:return T.s(t.$D,2,`0`);case`d`:return String(t.$W);case`dd`:return d(n.weekdaysMin,t.$W,c,2);case`ddd`:return d(n.weekdaysShort,t.$W,c,3);case`dddd`:return c[t.$W];case`H`:return String(a);case`HH`:return T.s(a,2,`0`);case`h`:return f(1);case`hh`:return f(2);case`a`:return m(a,o,!0);case`A`:return m(a,o,!1);case`m`:return String(o);case`mm`:return T.s(o,2,`0`);case`s`:return String(t.$s);case`ss`:return T.s(t.$s,2,`0`);case`SSS`:return T.s(t.$ms,3,`0`);case`Z`:return i}return null}(e)||i.replace(`:`,``)}))},_.utcOffset=function(){return 15*-Math.round(this.$d.getTimezoneOffset()/15)},_.diff=function(r,f,p){var m,h=this,g=T.p(f),_=w(r),v=(_.utcOffset()-this.utcOffset())*t,y=this-_,b=function(){return T.m(h,_)};switch(g){case d:m=b()/12;break;case l:m=b();break;case u:m=b()/3;break;case c:m=(y-v)/6048e5;break;case s:m=(y-v)/864e5;break;case o:m=y/n;break;case a:m=y/t;break;case i:m=y/e;break;default:m=y}return p?m:T.a(m)},_.daysInMonth=function(){return this.endOf(l).$D},_.$locale=function(){return b[this.$L]},_.locale=function(e,t){if(!e)return this.$L;var n=this.clone(),r=C(e,t,!0);return r&&(n.$L=r),n},_.clone=function(){return T.w(this.$d,this)},_.toDate=function(){return new Date(this.valueOf())},_.toJSON=function(){return this.isValid()?this.toISOString():null},_.toISOString=function(){return this.$d.toISOString()},_.toString=function(){return this.$d.toUTCString()},g}(),D=E.prototype;return w.prototype=D,[[`$ms`,r],[`$s`,i],[`$m`,a],[`$H`,o],[`$W`,s],[`$M`,l],[`$y`,d],[`$D`,f]].forEach((function(e){D[e[1]]=function(t){return this.$g(t,e[0],e[1])}})),w.extend=function(e,t){return e.$i||=(e(t,E,w),!0),w},w.locale=C,w.isDayjs=S,w.unix=function(e){return w(1e3*e)},w.en=b[y],w.Ls=b,w.p={},w}))})),bg=l(yg(),1),xg=/^Entry For \d{2} [A-Za-z]{3}, '\d{2}$/;function Sg(e){let t=/^(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})$/.exec(e);if(!t)return null;let n=new Date(`${t[1]}T${t[2]}:${t[3]}:00`);return Number.isNaN(n.getTime())?null:n}function Cg(e){return`Entry For ${(0,bg.default)(Sg(e)??new Date).format(`DD MMM, 'YY`)}`}function wg(e,t){let n=e?.trim()??``;return n.length>0?n:Cg(t)}function Tg(e,t){let n=e.trim();return xg.test(n)?n===Cg(t):!1}var Eg=`manifest.age`,Dg=300*1e3,Og=class e{storage;identity;manifestCache=null;manifestCacheLoadedAt=0;explorerIndex=null;manifestLoadPromise=null;constructor(e,t){this.storage=e,this.identity=t}async ensureInstructionsFile(){try{if((await this.storage.listFiles(``)).includes(`.vault-utils-version`)){let e=await this.storage.downloadFile(`.vault-utils-version`);if(e&&new TextDecoder().decode(e).trim()===`1.1.0`)return}await this.storage.uploadFile(`README-Silent-Memoirs.txt`,new TextEncoder().encode(bm),`text/plain`),await this.storage.uploadFile(`decrypt-vault.sh`,new TextEncoder().encode(xm),`text/plain`),await this.storage.uploadFile(`Decrypt-Vault.ps1`,new TextEncoder().encode(Sm),`text/plain`),await this.storage.uploadFile(`Decrypt-Vault.cmd`,new TextEncoder().encode(Cm),`text/plain`),await this.storage.uploadFile(`.vault-utils-version`,new TextEncoder().encode(`1.1.0`),`text/plain`)}catch(e){console.warn(`Failed to sync vault utility files:`,e)}}normalizeDirectoryPath(e){return e?e.split(`/`).filter(Boolean).join(`/`):``}getParentPath(e){let t=e.split(`/`).filter(Boolean);return t.length<=1?``:t.slice(0,-1).join(`/`)}getEntryName(e){return(e.split(`/`).pop()||``).replace(/\.age$/,``)}getYearFromDate(e){return e.split(`-`)[0]||new Date().getFullYear().toString()}toMetadata(e,t){let n=this.getParentPath(t);return{id:e.id,path:t,name:this.getEntryName(t),parentPath:n,title:wg(e.title,e.date),date:e.date,year:this.getYearFromDate(e.date),updatedAt:new Date().toISOString(),mediaIds:e.mediaIds||[]}}sortMetadata(e){return[...e].sort((e,t)=>{let n=t.date.localeCompare(e.date);return n===0?t.updatedAt.localeCompare(e.updatedAt):n})}sortFolderChildren(e){return[...e].sort((e,t)=>{let n=/^\d{4}$/.test(e.name),r=/^\d{4}$/.test(t.name);return n&&r?t.name.localeCompare(e.name):n?-1:r?1:e.name.localeCompare(t.name)})}sortMediaFiles(e){return[...e].sort((e,t)=>t.name.localeCompare(e.name))}addToGroupedMap(e,t,n){let r=e.get(t);if(r){r.push(n);return}e.set(t,[n])}buildMediaFilesFromEntries(e){let t=new Map;for(let n of e){let e=Array.isArray(n.mediaIds)?n.mediaIds:[];for(let r of e){if(typeof r!=`string`)continue;let e=this.normalizeDirectoryPath(r);if(!e)continue;let i=e.split(`.`).pop()?.toLowerCase();if(!i||!ih(i))continue;let a=this.normalizeDirectoryPath(this.getParentPath(e)),o=t.get(e);if(o){n.updatedAt>o.updatedAt&&(o.updatedAt=n.updatedAt);continue}t.set(e,{path:e,name:e.split(`/`).pop()||e,parentPath:a,year:e.split(`/`)[0]||``,updatedAt:n.updatedAt})}}let n=new Map;for(let e of t.values())this.addToGroupedMap(n,e.parentPath,e);for(let[e,t]of n.entries())n.set(e,this.sortMediaFiles(t));return n}buildExplorerIndex(e){let t=new Map,n=new Map;for(let n of e.directories)n.path!==n.parentPath&&this.addToGroupedMap(t,n.parentPath,n);for(let[e,n]of t.entries())t.set(e,this.sortFolderChildren(n));for(let t of e.entries)this.addToGroupedMap(n,t.parentPath,t);for(let[e,t]of n.entries())n.set(e,this.sortMetadata(t));let r=new Set(e.directories.map(e=>e.path));return r.add(``),{knownPaths:r,foldersByParentPath:t,entriesByParentPath:n,mediaByParentPath:this.buildMediaFilesFromEntries(e.entries)}}setManifestCache(e){return this.manifestCache=e,this.manifestCacheLoadedAt=Date.now(),this.explorerIndex=this.buildExplorerIndex(e),e}isManifestCacheStale(e){return this.manifestCache?Date.now()-this.manifestCacheLoadedAt>e:!0}buildDirectories(e){let t=new Date().toISOString(),n=new Map,r=e=>{let i=this.normalizeDirectoryPath(e);if(n.has(i))return;let a=this.getParentPath(i),o=i?i.split(`/`).pop()||i:`Entries`;n.set(i,{path:i,name:o,parentPath:a,folderCount:0,entryCount:0,updatedAt:t}),i&&r(a)};r(``);for(let t of e){let e=this.normalizeDirectoryPath(t.parentPath);r(e);let i=n.get(e);i&&(i.entryCount+=1);let a=e?[``,...e.split(`/`).map((e,t,n)=>n.slice(0,t+1).join(`/`))]:[``];for(let e of a){let r=n.get(e);r&&t.updatedAt>r.updatedAt&&(r.updatedAt=t.updatedAt)}if(t.mediaIds&&Array.isArray(t.mediaIds))for(let e of t.mediaIds){let i=this.normalizeDirectoryPath(this.getParentPath(e));r(i);let a=n.get(i);a&&(a.entryCount+=1);let o=i?[``,...i.split(`/`).map((e,t,n)=>n.slice(0,t+1).join(`/`))]:[``];for(let e of o){let r=n.get(e);r&&t.updatedAt>r.updatedAt&&(r.updatedAt=t.updatedAt)}}}for(let e of n.values()){if(!e.path)continue;let t=n.get(e.parentPath);t&&(t.folderCount+=1)}return[...n.values()].sort((e,t)=>e.path.localeCompare(t.path))}normalizeManifestEntries(e){let t=e.map(e=>{if(!e||typeof e!=`object`)return null;let t=e,n=typeof t.path==`string`?t.path:``,r=typeof t.date==`string`?t.date:``;if(!n||!r)return null;let i=this.normalizeDirectoryPath(typeof t.parentPath==`string`?t.parentPath:this.getParentPath(n));return{id:typeof t.id==`string`&&t.id?t.id:n,path:n,name:typeof t.name==`string`&&t.name?t.name:this.getEntryName(n),parentPath:i,title:wg(typeof t.title==`string`?t.title:``,r),date:r,year:typeof t.year==`string`&&t.year?t.year:this.getYearFromDate(r),updatedAt:typeof t.updatedAt==`string`&&t.updatedAt?t.updatedAt:new Date().toISOString(),mediaIds:Array.isArray(t.mediaIds)?t.mediaIds:[]}}).filter(e=>!!e);return this.sortMetadata(t)}createManifest(e){let t=this.sortMetadata(e);return{version:3,updatedAt:new Date().toISOString(),entries:t,directories:this.buildDirectories(t)}}async readManifest(){let e=await this.storage.downloadFile(Eg);if(!e)return null;let t=await mm(this.identity.secretKey,e),n=JSON.parse(t);if(n.version!==3||!Array.isArray(n.entries))return null;let r=this.normalizeManifestEntries(n.entries);return{version:n.version||3,updatedAt:n.updatedAt||new Date().toISOString(),entries:r,directories:this.buildDirectories(r)}}async writeManifest(e){let t=this.createManifest(e),n=await pm(this.identity.publicKey,JSON.stringify(t));return await this.storage.uploadFile(Eg,n),this.setManifestCache(t)}async getManifest(e=!1){if(!e&&this.manifestCache)return this.manifestCache;if(this.manifestLoadPromise)return this.manifestLoadPromise;this.manifestLoadPromise=(async()=>{let e=await this.readManifest();if(e)return this.setManifestCache(e);let t=await this.rebuildManifest();return this.manifestCache?this.manifestCache:this.setManifestCache(this.createManifest(t))})();try{return await this.manifestLoadPromise}finally{this.manifestLoadPromise=null}}static getEntryPath(e){return`${e.split(`-`)[0]||new Date().getFullYear().toString()}/${e}.age`}async getYears(){return(await this.storage.listFiles(``)).filter(e=>/^\d{4}$/.test(e)).sort((e,t)=>t.localeCompare(e))}async getEntriesForYear(e){return(await this.storage.listFiles(e)).filter(e=>e.endsWith(`.age`)&&e!==`vault.age`).sort((e,t)=>t.localeCompare(e))}async fetchEntry(e){let t=await this.storage.downloadFile(e);if(!t)return null;let n=await mm(this.identity.secretKey,t);return JSON.parse(n)}async getEntryMetadata(){return(await this.getManifest()).entries}async getRawManifest(){return await this.getManifest()}async refreshManifestIfStale(e=Dg){return this.isManifestCacheStale(e)?(await this.getManifest(!0),!0):!1}async getDirectoryListing(e=``){let t=await this.getManifest(),n=this.explorerIndex??this.buildExplorerIndex(t);this.explorerIndex||=n;let r=this.normalizeDirectoryPath(e),i=n.knownPaths.has(r)?r:``;return{currentPath:i,folders:[...n.foldersByParentPath.get(i)??[]],entries:[...n.entriesByParentPath.get(i)??[]],media:[...n.mediaByParentPath.get(i)??[]]}}async rebuildManifest(e){e&&e(`Scanning vault for year directories...`);let t=await this.getYears(),n=[];for(let r of t){e&&e(`Listing entries for year ${r}...`);let t=await this.getEntriesForYear(r),i=0;for(let a=0;a<t.length;a+=6){let o=t.slice(a,a+6),s=await Promise.allSettled(o.map(e=>this.fetchEntry(e).then(t=>({entry:t,path:e}))));for(let e of s)i++,e.status===`fulfilled`&&e.value.entry&&n.push(this.toMetadata(e.value.entry,e.value.path));e&&e(`Decrypting entries for ${r}... (${i}/${t.length})`)}}return e&&e(`Finalizing and encrypting new manifest...`),(await this.writeManifest(n)).entries}async saveEntry(t){let n=e.getEntryPath(t.date),r=JSON.stringify(t),i=await pm(this.identity.publicKey,r);await this.storage.uploadFile(n,i);let a=(await this.getManifest()).entries.filter(e=>e.path!==n&&e.id!==t.id);return a.unshift(this.toMetadata(t,n)),await this.writeManifest(a),n}async deleteEntry(e){await this.storage.deleteFile(e);let t=(await this.getManifest()).entries.filter(t=>t.path!==e);await this.writeManifest(t)}},kg=(0,S.createContext)(null);function Ag({children:e}){let t=fd(),{triggerRefresh:n}=Mm(),[r,i]=(0,S.useState)(null),[a,o]=(0,S.useState)(()=>mp()),s=(0,S.useCallback)(e=>{e&&(e.onTokenRefresh=()=>n(!0)),i(e)},[n]),[c,l]=(0,S.useState)(null),[u,d]=(0,S.useState)(null),[f,p]=(0,S.useState)(null),[m,h]=(0,S.useState)(!1),[g,_]=(0,S.useState)(!1),[v,y]=(0,S.useState)(null),[b,x]=(0,S.useState)(null),[C,w]=(0,S.useState)(``),[T,E]=(0,S.useState)(``),[D,O]=(0,S.useState)(``),[k,A]=(0,S.useState)(``),[j,M]=(0,S.useState)(``),[N,ee]=(0,S.useState)(``),[te,P]=(0,S.useState)(!1),[ne,re]=(0,S.useState)(null),ie=(0,S.useRef)(Date.now()),ae=(0,S.useRef)(()=>{}),oe=(0,S.useRef)(null),[se,{open:ce,close:le}]=we(!1),[ue,de]=(0,S.useState)(30),[fe,pe]=(0,S.useState)(null),[me,he]=(0,S.useState)(km),ge=me.status===`running`,_e=(0,S.useCallback)(e=>{p(e)},[]),ve=(0,S.useCallback)(()=>{p(null)},[]),ye=(0,S.useCallback)(e=>m?window.confirm(e):!0,[m]),be=(0,S.useCallback)(async e=>{if(!(!e||!r))try{await vg(e,r)}catch(t){console.error(`Failed to discard staged media for entry`,e,t)}},[r]),xe=(0,S.useCallback)(()=>{i(null),o(null),l(null),d(null),oe.current=null,h(!1),_(!1),y(null),x(null),w(``),E(``),O(``),A(``),M(``),ee(``),P(!1),re(null),ve(),le()},[ve,le]),Se=(0,S.useCallback)(()=>{th(),nh(),_g().catch(e=>console.error(`Failed to clear staged media on logout`,e)),bp(),xe(),t(xh.login,{replace:!0})},[t,xe]),Ce=(0,S.useCallback)(e=>{console.error(e),e instanceof vp&&Se()},[Se]);(0,S.useEffect)(()=>{let e=e=>{o(e.detail??null)};return window.addEventListener(cp,e),()=>{window.removeEventListener(cp,e)}},[]);let Te=(0,S.useCallback)(()=>{th(),nh(),_g().catch(e=>console.error(`Failed to clear staged media on vault lock`,e)),l(null),d(null),oe.current=null,ve(),le(),t(xh.unlock,{replace:!0})},[ve,le,t]);(0,S.useEffect)(()=>{ae.current=Ce},[Ce]),(0,S.useEffect)(()=>{if(!c||!r){oe.current=null;return}let e=c.identity;if(!e||u&&oe.current===e.publicKey)return;let t=!1;return(async()=>{let n=new Og(r,e);t||(oe.current=e.publicKey,d(n),n.ensureInstructionsFile().catch(e=>console.error(`Failed to backfill instructions file:`,e)))})().catch(e=>ae.current(e)),()=>{t=!0}},[r,u,c]),(0,S.useEffect)(()=>{h(v!==null&&(C!==k||T!==j||D!==N))},[v,C,k,T,j,D,N]),(0,S.useEffect)(()=>{let e=e=>{(m||ge)&&(e.preventDefault(),e.returnValue=m?`You have unsaved changes. Are you sure you want to leave?`:`A PDF export is in progress. Leaving will cancel it.`)};return window.addEventListener(`beforeunload`,e),()=>window.removeEventListener(`beforeunload`,e)},[m,ge]),(0,S.useEffect)(()=>{let e=null,t=()=>{e||=(ie.current=Date.now(),setTimeout(()=>{e=null},1e3))},n=[`mousemove`,`keydown`,`touchstart`,`scroll`];return n.forEach(e=>window.addEventListener(e,t,{passive:!0})),()=>{n.forEach(e=>window.removeEventListener(e,t)),e&&clearTimeout(e)}},[]),(0,S.useEffect)(()=>{if(!c)return;let e=setInterval(()=>{let e=Date.now()-ie.current;e>=9.5*60*1e3&&e<600*1e3?(de(Math.ceil((600*1e3-e)/1e3)),se||ce()):e>=600*1e3&&Te()},1e3);return()=>clearInterval(e)},[se,ce,Te,c]),(0,S.useEffect)(()=>{let e=()=>{!u||!c||u.refreshManifestIfStale().catch(e=>{console.error(`Failed to refresh manifest after focus`,e)})},t=()=>{if(document.visibilityState===`visible`){if(Date.now()-ie.current>=600*1e3&&c){Te();return}e()}},n=()=>{document.visibilityState===`visible`&&e()};return document.addEventListener(`visibilitychange`,t),window.addEventListener(`focus`,n),()=>{document.removeEventListener(`visibilitychange`,t),window.removeEventListener(`focus`,n)}},[Te,u,c]);let Ee=(0,S.useCallback)(()=>v&&!te?Th(v):xh.editor,[v,te]),De=(0,S.useRef)(!1),Oe={storage:r,setStorage:s,userProfile:a,setUserProfile:o,vaultManager:c,setVaultManager:l,syncEngine:u,currentSessionAuthMethod:f,setSessionAuthContext:_e,clearSessionAuthContext:ve,isDirty:m,setIsDirty:h,isSaving:g,setIsSaving:_,activeEntryPath:v,setActiveEntryPath:y,activeEntryId:b,setActiveEntryId:x,editorTitle:C,setEditorTitle:w,editorContent:T,setEditorContent:E,editorDate:D,setEditorDate:O,initialEditorTitle:k,setInitialEditorTitle:A,initialEditorContent:j,setInitialEditorContent:M,initialEditorDate:N,setInitialEditorDate:ee,isDraftMode:te,setIsDraftMode:P,sessionEditableEntryPath:ne,setSessionEditableEntryPath:re,confirmDiscardChanges:ye,discardStagedForEntry:be,handleAuthFailure:Ce,handleLogout:Se,performVaultLock:Te,getResumeRoute:Ee,triggerManifestRepair:(0,S.useCallback)(async()=>{if(!(!u||De.current)){De.current=!0,pe(`Preparing to rebuild manifest...`);try{await u.rebuildManifest(e=>pe(e))}catch(e){console.error(`Failed to rebuild manifest`,e)}finally{pe(null),De.current=!1}}},[u]),exportJobState:me,setExportJobState:he,isExportRunning:ge};return(0,L.jsxs)(kg.Provider,{value:Oe,children:[e,(0,L.jsxs)(G,{opened:se,onClose:()=>{},title:`Inactivity Warning`,centered:!0,closeOnClickOutside:!1,closeOnEscape:!1,withCloseButton:!1,children:[(0,L.jsxs)(nl,{mb:`md`,children:[`Your vault will lock automatically in `,(0,L.jsxs)(`b`,{children:[ue,` seconds`]}),` due to inactivity.`]}),(0,L.jsx)(nl,{size:`sm`,c:`dimmed`,mb:`lg`,children:`Unsaved changes will be preserved in memory and restored when you unlock.`}),(0,L.jsxs)(xs,{justify:`flex-end`,children:[(0,L.jsx)(dl,{color:`gray`,variant:`light`,onClick:Te,children:`Lock Now`}),(0,L.jsx)(dl,{onClick:()=>{ie.current=Date.now(),le()},children:`Continue Session`})]})]}),(0,L.jsx)(G,{opened:!!fe,onClose:()=>{},title:`Repairing Vault Manifest`,centered:!0,closeOnClickOutside:!1,closeOnEscape:!1,withCloseButton:!1,overlayProps:{blur:3},children:(0,L.jsxs)(bl,{style:{flexDirection:`column`},mt:`md`,mb:`xl`,children:[(0,L.jsx)(ds,{size:`lg`,mb:`md`}),(0,L.jsx)(nl,{fw:500,children:fe}),(0,L.jsxs)(nl,{size:`sm`,c:`dimmed`,mt:`xs`,children:[`Please remain on this screen while we're rebuilding your vault manifest. `,(0,L.jsx)(`br`,{}),` While we can repair the manifest agains missing files, we're not able to repair broken files. If any file is corrupted/modified outside the applicaiton, that data is lost.`]})]})})]})}function jg(){let e=(0,S.useContext)(kg);if(!e)throw Error(`useAppContext must be used within an AppProvider`);return e}export{Ud as $,zt as $t,rh as A,ve as An,wo as At,Dm as B,D as Bn,ja as Bt,yh as C,Oe as Cn,Bo as Ct,fh as D,xe as Dn,go as Dt,mh as E,Ce as En,ho as Et,ch as F,j as Fn,Na as Ft,Sp as G,v as Gn,Sn as Gt,bm as H,w as Hn,pa as Ht,Am as I,A as In,Fa as It,rp as J,f as Jn,B as Jt,vp as K,_ as Kn,V as Kt,Nm as L,N as Ln,Ia as Lt,bh as M,oe as Mn,Eo as Mt,dh as N,ae as Nn,Oo as Nt,ah as O,Se as On,bo as Ot,ph as P,ee as Pn,La as Pt,Vd as Q,l as Qn,cn as Qt,Mm as R,O as Rn,Ma as Rt,uh as S,F as Sn,Wo as St,gh as T,we as Tn,jo as Tt,mm as U,C as Un,xr as Ut,Tm as V,E as Vn,Pa as Vt,pm as W,x as Wn,Ln as Wt,zd as X,o as Xn,dn as Xt,jf as Y,u as Yn,pn as Yt,Bd as Z,s as Zn,ln as Zt,Th as _,We as _n,gs as _t,Tg as a,pt as an,G as at,vh as b,Me as bn,ts as bt,yg as c,Ze as cn,dl as ct,ug as d,ot as dn,Os as dt,Rt as en,Y as et,dg as f,tt as fn,As as ft,Oh as g,Ge as gn,xs as gt,xh as h,Ke as hn,ks as ht,Cg as i,xt as in,zl as it,lh as j,se as jn,uo as jt,oh as k,ye as kn,So as kt,hg as l,Qe as ln,nl as lt,lg as m,Je as mn,js as mt,jg as n,R as nn,Xl as nt,Sg as o,ut as on,bl as ot,pg as p,Ye as pn,Ds as pt,ip as q,g as qn,mn as qt,Og as r,St as rn,Kl as rt,wg as s,ct as sn,vl as st,Ag as t,z as tn,fd as tt,gg as u,$e as un,Rc as ut,Dh as v,Pe as vn,ds as vt,_h as w,Ee as wn,Fo as wt,hh as x,I as xn,Yo as xt,wh as y,Ne as yn,ns as yt,km as z,k as zn,Aa as zt};
