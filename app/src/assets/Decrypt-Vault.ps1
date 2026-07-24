@@ -12,8 +12,18 @@
 #      starting with AGE-SECRET-KEY-...
 #
 # Usage:
-#   Open PowerShell, navigate to this directory, and run:
-#   .\Decrypt-Vault.ps1
+#   Double-click Decrypt-Vault.cmd, or run in PowerShell:
+#     .\Decrypt-Vault.cmd
+#
+#   Alternative (PowerShell directly):
+#     .\Decrypt-Vault.ps1
+#   Note: If you see an "execution policy" error, use the .cmd launcher
+#   instead, or run:
+#     Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+#
+# Optional: To sign this script with your own certificate:
+#   $cert = Get-ChildItem -Path Cert:\CurrentUser\My -CodeSigningCert
+#   Set-AuthenticodeSignature -FilePath .\Decrypt-Vault.ps1 -Certificate $cert
 # =============================================================================
 
 $ErrorActionPreference = "Stop"
@@ -100,18 +110,15 @@ function Get-RelativePath {
     return $FullPath
 }
 
-# --- Decrypt files ------------------------------------------------------------
+# --- Collect all work items ---------------------------------------------------
 
-$EntriesOk = 0
-$EntriesFail = 0
-$MediaOk = 0
-$MediaFail = 0
+$workItems = @()
 
 # Find year directories (4-digit folders)
 $yearDirs = Get-ChildItem -Path $VaultDir -Directory | Where-Object { $_.Name -match '^\d{4}$' }
 
 foreach ($yearDir in $yearDirs) {
-    # Process entry files: YYYY/*.age
+    # Collect entry files: YYYY/*.age
     $entryFiles = Get-ChildItem -Path $yearDir.FullName -File -Filter "*.age" -ErrorAction SilentlyContinue
     foreach ($entryFile in $entryFiles) {
         $relPath = Get-RelativePath -BasePath $VaultDir -FullPath $entryFile.FullName
@@ -119,41 +126,16 @@ foreach ($yearDir in $yearDirs) {
         $outRel = $relPath -replace '\.age$', '.md'
         $outFile = Join-Path $OutputDir ($outRel -replace '/', '\')
 
-        $outDir = Split-Path -Parent $outFile
-        if (-not (Test-Path $outDir)) {
-            New-Item -ItemType Directory -Path $outDir -Force | Out-Null
-        }
-
-        # Decrypt entry
-        $tempFile = [System.IO.Path]::GetTempFileName()
-        try {
-            $proc = Start-Process -FilePath $agePath -ArgumentList "-d", "-i", "`"$IdentityFile`"", "-o", "`"$tempFile`"", "`"$($entryFile.FullName)`"" -NoNewWindow -Wait -PassThru -RedirectStandardError ([System.IO.Path]::GetTempFileName())
-            if ($proc.ExitCode -eq 0) {
-                # Parse JSON and extract plaintext
-                try {
-                    $jsonContent = Get-Content $tempFile -Raw -Encoding UTF8
-                    $entry = $jsonContent | ConvertFrom-Json
-                    $plaintext = $entry.plaintext
-                    if ($null -eq $plaintext) { $plaintext = "" }
-                    # Write with UTF8 no BOM
-                    [System.IO.File]::WriteAllText($outFile, $plaintext, [System.Text.UTF8Encoding]::new($false))
-                    Write-Host "  [ENTRY OK] $relPath -> $outRel" -ForegroundColor Green
-                    $EntriesOk++
-                } catch {
-                    Write-Host "  [ENTRY FAIL] $relPath (JSON parse error)" -ForegroundColor Yellow
-                    if (Test-Path $outFile) { Remove-Item $outFile -Force }
-                    $EntriesFail++
-                }
-            } else {
-                Write-Host "  [ENTRY FAIL] $relPath (decryption error)" -ForegroundColor Yellow
-                $EntriesFail++
-            }
-        } finally {
-            if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
+        $workItems += [PSCustomObject]@{
+            Type     = 'Entry'
+            InFile   = $entryFile.FullName
+            RelPath  = $relPath
+            OutRel   = $outRel
+            OutFile  = $outFile
         }
     }
 
-    # Process media files: YYYY/media/*.{png,webp,jpg,jpeg,avif}
+    # Collect media files: YYYY/media/*.{png,webp,jpg,jpeg,avif}
     $mediaDir = Join-Path $yearDir.FullName "media"
     if (Test-Path $mediaDir) {
         $mediaFiles = Get-ChildItem -Path $mediaDir -File | Where-Object {
@@ -165,30 +147,212 @@ foreach ($yearDir in $yearDirs) {
             $relPath = $relPath -replace '\\', '/'
             $outFile = Join-Path $OutputDir ($relPath -replace '/', '\')
 
-            $outDir = Split-Path -Parent $outFile
-            if (-not (Test-Path $outDir)) {
-                New-Item -ItemType Directory -Path $outDir -Force | Out-Null
-            }
-
-            # Decrypt media (binary output)
-            try {
-                $proc = Start-Process -FilePath $agePath -ArgumentList "-d", "-i", "`"$IdentityFile`"", "-o", "`"$outFile`"", "`"$($mediaFile.FullName)`"" -NoNewWindow -Wait -PassThru -RedirectStandardError ([System.IO.Path]::GetTempFileName())
-                if ($proc.ExitCode -eq 0) {
-                    Write-Host "  [MEDIA OK] $relPath" -ForegroundColor Green
-                    $MediaOk++
-                } else {
-                    Write-Host "  [MEDIA FAIL] $relPath" -ForegroundColor Yellow
-                    if (Test-Path $outFile) { Remove-Item $outFile -Force }
-                    $MediaFail++
-                }
-            } catch {
-                Write-Host "  [MEDIA FAIL] $relPath (error: $_)" -ForegroundColor Yellow
-                if (Test-Path $outFile) { Remove-Item $outFile -Force }
-                $MediaFail++
+            $workItems += [PSCustomObject]@{
+                Type     = 'Media'
+                InFile   = $mediaFile.FullName
+                RelPath  = $relPath
+                OutRel   = $relPath
+                OutFile  = $outFile
             }
         }
     }
 }
+
+$totalFiles = $workItems.Count
+
+if ($totalFiles -eq 0) {
+    Write-Host "No encrypted files found in vault." -ForegroundColor Yellow
+    Write-Host ""
+    exit 0
+}
+
+Write-Host "Found $totalFiles files to decrypt."
+Write-Host ""
+
+# --- Ensure output directories exist ------------------------------------------
+
+foreach ($item in $workItems) {
+    $outDir = Split-Path -Parent $item.OutFile
+    if (-not (Test-Path $outDir)) {
+        New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+    }
+}
+
+# --- Decrypt function ---------------------------------------------------------
+
+function Invoke-DecryptItem {
+    param(
+        [PSCustomObject]$Item,
+        [string]$AgePath,
+        [string]$IdentityFilePath
+    )
+
+    $result = [PSCustomObject]@{
+        Type    = $Item.Type
+        RelPath = $Item.RelPath
+        Success = $false
+        Error   = $null
+    }
+
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    $stderrFile = [System.IO.Path]::GetTempFileName()
+    try {
+        if ($Item.Type -eq 'Entry') {
+            $proc = Start-Process -FilePath $AgePath -ArgumentList "-d", "-i", "`"$IdentityFilePath`"", "-o", "`"$tempFile`"", "`"$($Item.InFile)`"" -NoNewWindow -Wait -PassThru -RedirectStandardError $stderrFile
+            if ($proc.ExitCode -eq 0) {
+                try {
+                    $jsonContent = Get-Content $tempFile -Raw -Encoding UTF8
+                    $entry = $jsonContent | ConvertFrom-Json
+                    $plaintext = $entry.plaintext
+                    if ($null -eq $plaintext) { $plaintext = "" }
+                    [System.IO.File]::WriteAllText($Item.OutFile, $plaintext, [System.Text.UTF8Encoding]::new($false))
+                    $result.Success = $true
+                } catch {
+                    $result.Error = "JSON parse error"
+                    if (Test-Path $Item.OutFile) { Remove-Item $Item.OutFile -Force }
+                }
+            } else {
+                $result.Error = "decryption error"
+            }
+        } else {
+            # Media file — decrypt directly to output
+            $proc = Start-Process -FilePath $AgePath -ArgumentList "-d", "-i", "`"$IdentityFilePath`"", "-o", "`"$($Item.OutFile)`"", "`"$($Item.InFile)`"" -NoNewWindow -Wait -PassThru -RedirectStandardError $stderrFile
+            if ($proc.ExitCode -eq 0) {
+                $result.Success = $true
+            } else {
+                $result.Error = "decryption error"
+                if (Test-Path $Item.OutFile) { Remove-Item $Item.OutFile -Force }
+            }
+        }
+    } catch {
+        $result.Error = $_.Exception.Message
+        if (Test-Path $Item.OutFile) { Remove-Item $Item.OutFile -Force }
+    } finally {
+        if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
+        if (Test-Path $stderrFile) { Remove-Item $stderrFile -Force }
+    }
+
+    return $result
+}
+
+# --- Decrypt files (parallel or sequential) -----------------------------------
+
+$EntriesOk = 0
+$EntriesFail = 0
+$MediaOk = 0
+$MediaFail = 0
+$failedFiles = @()
+
+$useParallel = $PSVersionTable.PSVersion.Major -ge 7
+
+if ($useParallel) {
+    $threadCount = [Environment]::ProcessorCount
+    $threadCount = [Math]::Min($threadCount, 16)
+    Write-Host "[INFO] Using $threadCount parallel threads (PowerShell $($PSVersionTable.PSVersion))" -ForegroundColor Cyan
+    Write-Host ""
+
+    # Synchronized state for progress tracking
+    $sync = [hashtable]::Synchronized(@{
+        Completed   = 0
+        EntriesOk   = 0
+        EntriesFail = 0
+        MediaOk     = 0
+        MediaFail   = 0
+        FailedFiles = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
+    })
+
+    # Launch parallel work as a job
+    $job = $workItems | ForEach-Object -Parallel {
+        $item = $_
+        $syncRef = $using:sync
+        $ageTool = $using:agePath
+        $idFile = $using:IdentityFile
+
+        $tempFile = [System.IO.Path]::GetTempFileName()
+        $stderrFile = [System.IO.Path]::GetTempFileName()
+        try {
+            if ($item.Type -eq 'Entry') {
+                $proc = Start-Process -FilePath $ageTool -ArgumentList "-d", "-i", "`"$idFile`"", "-o", "`"$tempFile`"", "`"$($item.InFile)`"" -NoNewWindow -Wait -PassThru -RedirectStandardError $stderrFile
+                if ($proc.ExitCode -eq 0) {
+                    try {
+                        $jsonContent = Get-Content $tempFile -Raw -Encoding UTF8
+                        $entry = $jsonContent | ConvertFrom-Json
+                        $plaintext = $entry.plaintext
+                        if ($null -eq $plaintext) { $plaintext = "" }
+                        [System.IO.File]::WriteAllText($item.OutFile, $plaintext, [System.Text.UTF8Encoding]::new($false))
+                        $syncRef.EntriesOk++
+                    } catch {
+                        $syncRef.EntriesFail++
+                        $syncRef.FailedFiles.Add("[ENTRY FAIL] $($item.RelPath) (JSON parse error)") | Out-Null
+                        if (Test-Path $item.OutFile) { Remove-Item $item.OutFile -Force }
+                    }
+                } else {
+                    $syncRef.EntriesFail++
+                    $syncRef.FailedFiles.Add("[ENTRY FAIL] $($item.RelPath) (decryption error)") | Out-Null
+                }
+            } else {
+                $proc = Start-Process -FilePath $ageTool -ArgumentList "-d", "-i", "`"$idFile`"", "-o", "`"$($item.OutFile)`"", "`"$($item.InFile)`"" -NoNewWindow -Wait -PassThru -RedirectStandardError $stderrFile
+                if ($proc.ExitCode -eq 0) {
+                    $syncRef.MediaOk++
+                } else {
+                    $syncRef.MediaFail++
+                    $syncRef.FailedFiles.Add("[MEDIA FAIL] $($item.RelPath)") | Out-Null
+                    if (Test-Path $item.OutFile) { Remove-Item $item.OutFile -Force }
+                }
+            }
+        } catch {
+            if ($item.Type -eq 'Entry') { $syncRef.EntriesFail++ } else { $syncRef.MediaFail++ }
+            $syncRef.FailedFiles.Add("[$($item.Type.ToUpper()) FAIL] $($item.RelPath) ($_)") | Out-Null
+            if (Test-Path $item.OutFile) { Remove-Item $item.OutFile -Force }
+        } finally {
+            if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
+            if (Test-Path $stderrFile) { Remove-Item $stderrFile -Force }
+            $syncRef.Completed++
+        }
+    } -ThrottleLimit $threadCount -AsJob
+
+    # Monitor progress from main thread
+    while ($job.State -eq 'Running') {
+        $completed = $sync.Completed
+        $pct = if ($totalFiles -gt 0) { [Math]::Min(100, [int](($completed / $totalFiles) * 100)) } else { 0 }
+        Write-Progress -Activity "Decrypting vault" -Status "$completed/$totalFiles entries processed" -PercentComplete $pct
+        Start-Sleep -Milliseconds 250
+    }
+
+    # Final progress update
+    $job | Receive-Job -Wait -AutoRemoveJob | Out-Null
+    Write-Progress -Activity "Decrypting vault" -Completed
+
+    $EntriesOk = $sync.EntriesOk
+    $EntriesFail = $sync.EntriesFail
+    $MediaOk = $sync.MediaOk
+    $MediaFail = $sync.MediaFail
+    $failedFiles = @($sync.FailedFiles)
+} else {
+    Write-Host "[WARN] PowerShell $($PSVersionTable.PSVersion) detected. Parallel decryption requires PowerShell 7+." -ForegroundColor Yellow
+    Write-Host "       Falling back to sequential processing. Install PS 7 for faster decryption." -ForegroundColor Yellow
+    Write-Host ""
+
+    $completed = 0
+    foreach ($item in $workItems) {
+        $completed++
+        $pct = if ($totalFiles -gt 0) { [Math]::Min(100, [int](($completed / $totalFiles) * 100)) } else { 0 }
+        Write-Progress -Activity "Decrypting vault" -Status "$completed/$totalFiles entries processed" -PercentComplete $pct
+
+        $result = Invoke-DecryptItem -Item $item -AgePath $agePath -IdentityFilePath $IdentityFile
+
+        if ($result.Success) {
+            if ($result.Type -eq 'Entry') { $EntriesOk++ } else { $MediaOk++ }
+        } else {
+            if ($result.Type -eq 'Entry') { $EntriesFail++ } else { $MediaFail++ }
+            $failedFiles += "[$($result.Type.ToUpper()) FAIL] $($result.RelPath) ($($result.Error))"
+        }
+    }
+
+    Write-Progress -Activity "Decrypting vault" -Completed
+}
+
+# --- Summary ------------------------------------------------------------------
 
 Write-Host ""
 Write-Host "============================================"
@@ -200,8 +364,13 @@ Write-Host ""
 Write-Host "Decrypted files are in: $OutputDir"
 Write-Host ""
 
-if ($EntriesFail -gt 0 -or $MediaFail -gt 0) {
-    Write-Host "NOTE: Some files could not be decrypted. They may be corrupted" -ForegroundColor Yellow
-    Write-Host "or your identity key may not match this vault." -ForegroundColor Yellow
+if ($failedFiles.Count -gt 0) {
+    Write-Host "Failed files:" -ForegroundColor Yellow
+    foreach ($f in $failedFiles) {
+        Write-Host "  $f" -ForegroundColor Yellow
+    }
+    Write-Host ""
+    Write-Host "NOTE: These files may be corrupted or your identity key" -ForegroundColor Yellow
+    Write-Host "may not match this vault." -ForegroundColor Yellow
     exit 1
 }

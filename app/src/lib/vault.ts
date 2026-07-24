@@ -13,6 +13,7 @@ import {
 import instructionsText from '../assets/vault-directory-instructions.txt?raw';
 import decryptVaultSh from '../assets/decrypt-vault.sh?raw';
 import decryptVaultPs1 from '../assets/Decrypt-Vault.ps1?raw';
+import decryptVaultCmd from '../assets/Decrypt-Vault.cmd?raw';
 
 const VAULT_KEY_FILE = 'vault_key.age';
 
@@ -167,6 +168,8 @@ export class VaultManager {
       await this.storage.uploadFile('README-Silent-Memoirs.txt', new TextEncoder().encode(instructionsText), 'text/plain');
       await this.storage.uploadFile('decrypt-vault.sh', new TextEncoder().encode(decryptVaultSh), 'text/plain');
       await this.storage.uploadFile('Decrypt-Vault.ps1', new TextEncoder().encode(decryptVaultPs1), 'text/plain');
+      await this.storage.uploadFile('Decrypt-Vault.cmd', new TextEncoder().encode(decryptVaultCmd), 'text/plain');
+      await this.storage.uploadFile('.vault-utils-version', new TextEncoder().encode(__APP_VERSION__), 'text/plain');
     } catch {
       throw new Error("Failed to upload vault instructions file. Vault initialization aborted.");
     }

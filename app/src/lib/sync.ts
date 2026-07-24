@@ -7,6 +7,7 @@ import { resolveEntryTitle } from './entryTitle';
 import instructionsText from '../assets/vault-directory-instructions.txt?raw';
 import decryptVaultSh from '../assets/decrypt-vault.sh?raw';
 import decryptVaultPs1 from '../assets/Decrypt-Vault.ps1?raw';
+import decryptVaultCmd from '../assets/Decrypt-Vault.cmd?raw';
 
 const MANIFEST_FILE = 'manifest.age';
 const MANIFEST_CACHE_STALE_MS = 5 * 60 * 1000;
@@ -77,30 +78,46 @@ export class SyncEngine {
   public async ensureInstructionsFile(): Promise<void> {
     try {
       const files = await this.storage.listFiles('');
-      if (!files.includes('README-Silent-Memoirs.txt'))
-        await this.storage.uploadFile(
-          'README-Silent-Memoirs.txt',
-          new TextEncoder().encode(instructionsText),
-          'text/plain'
-        );
 
-      // Backfill decryption scripts if missing
-      if (!files.includes('decrypt-vault.sh')) {
-        await this.storage.uploadFile(
-          'decrypt-vault.sh',
-          new TextEncoder().encode(decryptVaultSh),
-          'text/plain'
-        );
+      // Check if vault utilities are already current via version stamp
+      if (files.includes('.vault-utils-version')) {
+        const versionBytes = await this.storage.downloadFile('.vault-utils-version');
+        if (versionBytes) {
+          const vaultVersion = new TextDecoder().decode(versionBytes).trim();
+          if (vaultVersion === __APP_VERSION__) return; // Everything is current
+        }
       }
-      if (!files.includes('Decrypt-Vault.ps1')) {
-        await this.storage.uploadFile(
-          'Decrypt-Vault.ps1',
-          new TextEncoder().encode(decryptVaultPs1),
-          'text/plain'
-        );
-      }
+
+      // Version mismatch or stamp missing — upload all utility files
+      await this.storage.uploadFile(
+        'README-Silent-Memoirs.txt',
+        new TextEncoder().encode(instructionsText),
+        'text/plain'
+      );
+      await this.storage.uploadFile(
+        'decrypt-vault.sh',
+        new TextEncoder().encode(decryptVaultSh),
+        'text/plain'
+      );
+      await this.storage.uploadFile(
+        'Decrypt-Vault.ps1',
+        new TextEncoder().encode(decryptVaultPs1),
+        'text/plain'
+      );
+      await this.storage.uploadFile(
+        'Decrypt-Vault.cmd',
+        new TextEncoder().encode(decryptVaultCmd),
+        'text/plain'
+      );
+
+      // Update the version stamp last (acts as a commit marker)
+      await this.storage.uploadFile(
+        '.vault-utils-version',
+        new TextEncoder().encode(__APP_VERSION__),
+        'text/plain'
+      );
     } catch (error) {
-      console.warn("Failed to backfill vault recovery files:", error);
+      console.warn("Failed to sync vault utility files:", error);
     }
   }
 
