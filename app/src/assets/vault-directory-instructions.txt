@@ -56,18 +56,32 @@ STEPS:
 
 2. Run the appropriate script for your platform:
 
+   Windows:
+     Double-click `Decrypt-Vault.cmd` or run in a terminal:
+       .\Decrypt-Vault.cmd
+
+     Alternative (PowerShell directly):
+       .\Decrypt-Vault.ps1
+     Note: If you see an "execution policy" error, use the .cmd launcher
+     instead, or run: Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+
    macOS / Linux:
      chmod +x decrypt-vault.sh
      ./decrypt-vault.sh
 
-   Windows (PowerShell):
-     .\Decrypt-Vault.ps1
+     Alternative (no chmod needed):
+       bash decrypt-vault.sh
+
+     macOS only: If you see a Gatekeeper warning, run first:
+       xattr -d com.apple.quarantine decrypt-vault.sh
 
 3. A `decrypted/` folder will be created mirroring the vault structure:
    - Journal entries are saved as readable Markdown (.md) files.
    - Media files are saved with their original image format.
 
 NOTES:
+- Decryption runs in parallel when your system supports it. No configuration
+  needed — the script automatically detects available CPU cores.
 - The scripts require `age` to be installed and available.
 - On macOS/Linux, either `python3` or `jq` must be available (most systems 
   have python3 pre-installed).

@@ -15,6 +15,12 @@
 # Usage:
 #   chmod +x decrypt-vault.sh
 #   ./decrypt-vault.sh
+#
+#   Alternative (no chmod needed):
+#     bash decrypt-vault.sh
+#
+#   macOS users: If you see a Gatekeeper warning, run first:
+#     xattr -d com.apple.quarantine decrypt-vault.sh
 # =============================================================================
 
 set -euo pipefail
@@ -93,75 +99,189 @@ mkdir -p "$OUTPUT_DIR"
 echo "Output directory: $OUTPUT_DIR"
 echo ""
 
-# --- Decrypt files ------------------------------------------------------------
+# --- Detect parallelism -------------------------------------------------------
 
-ENTRIES_OK=0
-ENTRIES_FAIL=0
-MEDIA_OK=0
-MEDIA_FAIL=0
+NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
+NPROC=$((NPROC > 16 ? 16 : NPROC))
 
-# Process entry files: YYYY/YYYY-MM-DD_HH-MM.age
+# Check if xargs supports -P (parallel)
+USE_PARALLEL=false
+if echo "" | xargs -P 1 echo "" &>/dev/null 2>&1; then
+  USE_PARALLEL=true
+fi
+
+if [ "$USE_PARALLEL" = true ] && [ "$NPROC" -gt 1 ]; then
+  echo "[INFO] Using $NPROC parallel threads"
+else
+  echo "[INFO] Running sequentially"
+fi
+echo ""
+
+# --- Build work manifest ------------------------------------------------------
+
+MANIFEST_FILE=$(mktemp)
+STATUS_DIR=$(mktemp -d)
+trap 'rm -rf "$MANIFEST_FILE" "$STATUS_DIR"' EXIT
+
+TOTAL=0
+
+# Collect entry files: YYYY/*.age
 while IFS= read -r encrypted_file; do
-  rel_path="${encrypted_file#"$VAULT_DIR/"}"
-  out_rel="${rel_path%.age}.md"
-  out_file="$OUTPUT_DIR/$out_rel"
+  echo "entry|$encrypted_file" >> "$MANIFEST_FILE"
+  TOTAL=$((TOTAL + 1))
+done < <(find "$VAULT_DIR" -mindepth 2 -type f -name "*.age" \
+  ! -path "*/media/*" \
+  -path "*/[0-9][0-9][0-9][0-9]/*" | sort)
 
-  mkdir -p "$(dirname "$out_file")"
+# Collect media files: YYYY/media/*.{png,webp,jpg,jpeg,avif}
+while IFS= read -r encrypted_file; do
+  echo "media|$encrypted_file" >> "$MANIFEST_FILE"
+  TOTAL=$((TOTAL + 1))
+done < <(find "$VAULT_DIR" -mindepth 3 -type f -path "*/media/*" \
+  \( -iname "*.png" -o -iname "*.webp" -o -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.avif" \) | sort)
 
-  tmp_file=$(mktemp)
-  if age -d -i "$IDENTITY_FILE" "$encrypted_file" > "$tmp_file" 2>/dev/null; then
-    extract_ok=false
+if [ "$TOTAL" -eq 0 ]; then
+  echo "No encrypted files found in vault."
+  echo ""
+  exit 0
+fi
 
-    if [ "$JSON_PARSER" = "python3" ]; then
-      if python3 -c "
+echo "Found $TOTAL files to decrypt."
+echo ""
+echo -n "Press any key to begin decryption..."
+read -rsn1
+echo ""
+echo ""
+# --- Decrypt function ---------------------------------------------------------
+
+decrypt_one() {
+  local line="$1"
+  local vault_dir="$2"
+  local identity_file="$3"
+  local output_dir="$4"
+  local json_parser="$5"
+  local status_dir="$6"
+
+  local item_type="${line%%|*}"
+  local encrypted_file="${line#*|}"
+  local rel_path="${encrypted_file#"$vault_dir"/}"
+
+  # Generate a unique status file name
+  local status_file
+  status_file="$status_dir/$(echo "$rel_path" | tr '/' '_')"
+
+  if [ "$item_type" = "entry" ]; then
+    local out_rel="${rel_path%.age}.md"
+    local out_file="$output_dir/$out_rel"
+    mkdir -p "$(dirname "$out_file")"
+
+    local tmp_file
+    tmp_file=$(mktemp)
+    if age -d -i "$identity_file" "$encrypted_file" > "$tmp_file" 2>/dev/null; then
+      local extract_ok=false
+
+      if [ "$json_parser" = "python3" ]; then
+        if python3 -c "
 import json, sys
 with open(sys.argv[1], 'r', encoding='utf-8') as f:
     data = json.load(f)
 content = data.get('plaintext', '')
 sys.stdout.write(content)
 " "$tmp_file" > "$out_file" 2>/dev/null; then
-        extract_ok=true
+          extract_ok=true
+        fi
+      else
+        if jq -r '.plaintext // ""' "$tmp_file" > "$out_file" 2>/dev/null; then
+          extract_ok=true
+        fi
       fi
-    else
-      if jq -r '.plaintext // ""' "$tmp_file" > "$out_file" 2>/dev/null; then
-        extract_ok=true
-      fi
-    fi
 
-    if [ "$extract_ok" = true ]; then
-      echo "  [ENTRY OK] $rel_path -> $out_rel"
-      ENTRIES_OK=$((ENTRIES_OK + 1))
+      if [ "$extract_ok" = true ]; then
+        echo "entry_ok" > "$status_file"
+      else
+        echo "entry_fail|$rel_path (JSON parse error)" > "$status_file"
+        rm -f "$out_file"
+      fi
     else
-      echo "  [ENTRY FAIL] $rel_path (JSON parse error)"
+      echo "entry_fail|$rel_path (decryption error)" > "$status_file"
+    fi
+    rm -f "$tmp_file"
+
+  else
+    # Media file
+    local out_file="$output_dir/$rel_path"
+    mkdir -p "$(dirname "$out_file")"
+
+    if age -d -i "$identity_file" "$encrypted_file" > "$out_file" 2>/dev/null; then
+      echo "media_ok" > "$status_file"
+    else
+      echo "media_fail|$rel_path" > "$status_file"
       rm -f "$out_file"
-      ENTRIES_FAIL=$((ENTRIES_FAIL + 1))
     fi
-  else
-    echo "  [ENTRY FAIL] $rel_path (decryption error)"
-    ENTRIES_FAIL=$((ENTRIES_FAIL + 1))
   fi
-  rm -f "$tmp_file"
-done < <(find "$VAULT_DIR" -mindepth 2 -type f -name "*.age" \
-  ! -path "*/media/*" \
-  -path "*/[0-9][0-9][0-9][0-9]/*" | sort)
+}
 
-# Process media files: YYYY/media/*.{png,webp,jpg,jpeg,avif}
-while IFS= read -r encrypted_file; do
-  rel_path="${encrypted_file#"$VAULT_DIR/"}"
-  out_file="$OUTPUT_DIR/$rel_path"
+export -f decrypt_one
 
-  mkdir -p "$(dirname "$out_file")"
+# --- Progress bar function ----------------------------------------------------
 
-  if age -d -i "$IDENTITY_FILE" "$encrypted_file" > "$out_file" 2>/dev/null; then
-    echo "  [MEDIA OK] $rel_path"
-    MEDIA_OK=$((MEDIA_OK + 1))
-  else
-    echo "  [MEDIA FAIL] $rel_path"
-    rm -f "$out_file"
-    MEDIA_FAIL=$((MEDIA_FAIL + 1))
-  fi
-done < <(find "$VAULT_DIR" -mindepth 3 -type f -path "*/media/*" \
-  \( -iname "*.png" -o -iname "*.webp" -o -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.avif" \) | sort)
+show_progress() {
+  local current=$1 total=$2
+  if [ "$total" -eq 0 ]; then return; fi
+  local pct=$((current * 100 / total))
+  local bar_width=40
+  local filled=$((pct * bar_width / 100))
+  local empty=$((bar_width - filled))
+  local filled_bar=""
+  local empty_bar=""
+  local i
+  for ((i = 0; i < filled; i++)); do filled_bar+="█"; done
+  for ((i = 0; i < empty; i++)); do empty_bar+="░"; done
+  printf "\r  %s%s  %3d%%  (%d/%d)" "$filled_bar" "$empty_bar" "$pct" "$current" "$total"
+}
+
+# --- Decrypt files ------------------------------------------------------------
+
+if [ "$USE_PARALLEL" = true ] && [ "$NPROC" -gt 1 ]; then
+  # Parallel execution with xargs -P
+  # We run decrypt_one for each line in the manifest
+  cat "$MANIFEST_FILE" | xargs -P "$NPROC" -I {} bash -c \
+    'decrypt_one "$@"' _ {} "$VAULT_DIR" "$IDENTITY_FILE" "$OUTPUT_DIR" "$JSON_PARSER" "$STATUS_DIR"
+
+  # Show final progress (100%)
+  show_progress "$TOTAL" "$TOTAL"
+  echo ""
+else
+  # Sequential execution with progress bar
+  COMPLETED=0
+  while IFS= read -r line; do
+    decrypt_one "$line" "$VAULT_DIR" "$IDENTITY_FILE" "$OUTPUT_DIR" "$JSON_PARSER" "$STATUS_DIR"
+    COMPLETED=$((COMPLETED + 1))
+    show_progress "$COMPLETED" "$TOTAL"
+  done < "$MANIFEST_FILE"
+  echo ""
+fi
+
+# --- Aggregate results --------------------------------------------------------
+
+ENTRIES_OK=0
+ENTRIES_FAIL=0
+MEDIA_OK=0
+MEDIA_FAIL=0
+FAILED_FILES=()
+
+for status_file in "$STATUS_DIR"/*; do
+  [ -f "$status_file" ] || continue
+  status=$(cat "$status_file")
+  case "$status" in
+    entry_ok)    ENTRIES_OK=$((ENTRIES_OK + 1)) ;;
+    media_ok)    MEDIA_OK=$((MEDIA_OK + 1)) ;;
+    entry_fail*) ENTRIES_FAIL=$((ENTRIES_FAIL + 1)); FAILED_FILES+=("${status#*|}") ;;
+    media_fail*) MEDIA_FAIL=$((MEDIA_FAIL + 1)); FAILED_FILES+=("${status#*|}") ;;
+  esac
+done
+
+# --- Summary ------------------------------------------------------------------
 
 echo ""
 echo "============================================"
@@ -173,8 +293,13 @@ echo ""
 echo "Decrypted files are in: $OUTPUT_DIR"
 echo ""
 
-if [ $ENTRIES_FAIL -gt 0 ] || [ $MEDIA_FAIL -gt 0 ]; then
-  echo "NOTE: Some files could not be decrypted. They may be corrupted"
-  echo "or your identity key may not match this vault."
+if [ ${#FAILED_FILES[@]} -gt 0 ]; then
+  echo "Failed files:"
+  for f in "${FAILED_FILES[@]}"; do
+    echo "  [FAIL] $f"
+  done
+  echo ""
+  echo "NOTE: These files may be corrupted or your identity key"
+  echo "may not match this vault."
   exit 1
 fi
