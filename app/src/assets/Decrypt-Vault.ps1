@@ -88,6 +88,17 @@ if (-not $firstLine.StartsWith("AGE-SECRET-KEY-")) {
 }
 
 Write-Host "[OK] Identity file found" -ForegroundColor Green
+
+# Check PowerShell version for parallel support
+$useParallel = $PSVersionTable.PSVersion.Major -ge 7
+if ($useParallel) {
+    $threadCount = [Environment]::ProcessorCount
+    $threadCount = [Math]::Min($threadCount, 16)
+    Write-Host "[OK] PowerShell $($PSVersionTable.PSVersion) — will use $threadCount parallel threads" -ForegroundColor Green
+} else {
+    Write-Host "[WARN] PowerShell $($PSVersionTable.PSVersion) detected. Parallel decryption requires PowerShell 7+." -ForegroundColor Yellow
+    Write-Host "       Will fall back to sequential processing. Install PS 7 for faster decryption." -ForegroundColor Yellow
+}
 Write-Host ""
 
 # --- Create output directory --------------------------------------------------
@@ -168,7 +179,9 @@ if ($totalFiles -eq 0) {
 
 Write-Host "Found $totalFiles files to decrypt."
 Write-Host ""
-
+Write-Host "Press any key to begin decryption..." -ForegroundColor DarkGray
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+Write-Host ""
 # --- Ensure output directories exist ------------------------------------------
 
 foreach ($item in $workItems) {
@@ -228,11 +241,26 @@ function Invoke-DecryptItem {
         $result.Error = $_.Exception.Message
         if (Test-Path $Item.OutFile) { Remove-Item $Item.OutFile -Force }
     } finally {
-        if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
-        if (Test-Path $stderrFile) { Remove-Item $stderrFile -Force }
+        if (Test-Path $tempFile) { Remove-Item $tempFile -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $stderrFile) { Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue }
     }
 
     return $result
+}
+
+# --- Progress bar helper ------------------------------------------------------
+
+function Show-InlineProgress {
+    param([int]$Completed, [int]$Total)
+    if ($Total -eq 0) { return }
+    $pct = [Math]::Min(100, [int](($Completed / $Total) * 100))
+    $barWidth = 40
+    $filled = [Math]::Floor($pct * $barWidth / 100)
+    $empty = $barWidth - $filled
+    $filledBar = [string]::new([char]0x2588, $filled)  # █
+    $emptyBar = [string]::new([char]0x2591, $empty)    # ░
+    $line = "  $filledBar$emptyBar  ${pct}%  ($Completed/$Total)"
+    Write-Host "`r$line" -NoNewline
 }
 
 # --- Decrypt files (parallel or sequential) -----------------------------------
@@ -246,10 +274,6 @@ $failedFiles = @()
 $useParallel = $PSVersionTable.PSVersion.Major -ge 7
 
 if ($useParallel) {
-    $threadCount = [Environment]::ProcessorCount
-    $threadCount = [Math]::Min($threadCount, 16)
-    Write-Host "[INFO] Using $threadCount parallel threads (PowerShell $($PSVersionTable.PSVersion))" -ForegroundColor Cyan
-    Write-Host ""
 
     # Synchronized state for progress tracking
     $sync = [hashtable]::Synchronized(@{
@@ -305,23 +329,22 @@ if ($useParallel) {
             $syncRef.FailedFiles.Add("[$($item.Type.ToUpper()) FAIL] $($item.RelPath) ($_)") | Out-Null
             if (Test-Path $item.OutFile) { Remove-Item $item.OutFile -Force }
         } finally {
-            if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
-            if (Test-Path $stderrFile) { Remove-Item $stderrFile -Force }
+            if (Test-Path $tempFile) { Remove-Item $tempFile -Force -ErrorAction SilentlyContinue }
+            if (Test-Path $stderrFile) { Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue }
             $syncRef.Completed++
         }
     } -ThrottleLimit $threadCount -AsJob
 
     # Monitor progress from main thread
     while ($job.State -eq 'Running') {
-        $completed = $sync.Completed
-        $pct = if ($totalFiles -gt 0) { [Math]::Min(100, [int](($completed / $totalFiles) * 100)) } else { 0 }
-        Write-Progress -Activity "Decrypting vault" -Status "$completed/$totalFiles entries processed" -PercentComplete $pct
-        Start-Sleep -Milliseconds 250
+        Show-InlineProgress -Completed $sync.Completed -Total $totalFiles
+        Start-Sleep -Milliseconds 200
     }
 
     # Final progress update
     $job | Receive-Job -Wait -AutoRemoveJob | Out-Null
-    Write-Progress -Activity "Decrypting vault" -Completed
+    Show-InlineProgress -Completed $totalFiles -Total $totalFiles
+    Write-Host ""  # move to next line
 
     $EntriesOk = $sync.EntriesOk
     $EntriesFail = $sync.EntriesFail
@@ -329,15 +352,10 @@ if ($useParallel) {
     $MediaFail = $sync.MediaFail
     $failedFiles = @($sync.FailedFiles)
 } else {
-    Write-Host "[WARN] PowerShell $($PSVersionTable.PSVersion) detected. Parallel decryption requires PowerShell 7+." -ForegroundColor Yellow
-    Write-Host "       Falling back to sequential processing. Install PS 7 for faster decryption." -ForegroundColor Yellow
-    Write-Host ""
-
     $completed = 0
     foreach ($item in $workItems) {
         $completed++
-        $pct = if ($totalFiles -gt 0) { [Math]::Min(100, [int](($completed / $totalFiles) * 100)) } else { 0 }
-        Write-Progress -Activity "Decrypting vault" -Status "$completed/$totalFiles entries processed" -PercentComplete $pct
+        Show-InlineProgress -Completed $completed -Total $totalFiles
 
         $result = Invoke-DecryptItem -Item $item -AgePath $agePath -IdentityFilePath $IdentityFile
 
@@ -349,7 +367,8 @@ if ($useParallel) {
         }
     }
 
-    Write-Progress -Activity "Decrypting vault" -Completed
+    Show-InlineProgress -Completed $totalFiles -Total $totalFiles
+    Write-Host ""  # move to next line
 }
 
 # --- Summary ------------------------------------------------------------------

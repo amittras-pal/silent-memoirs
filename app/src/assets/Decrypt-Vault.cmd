@@ -10,5 +10,11 @@ REM Usage: Double-click this file, or run in a terminal:
 REM   .\Decrypt-Vault.cmd
 REM =============================================================================
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Decrypt-Vault.ps1"
+REM Prefer PowerShell 7+ (pwsh.exe) if available, fall back to PowerShell 5.1
+where pwsh >nul 2>nul
+if %ERRORLEVEL% equ 0 (
+    pwsh.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Decrypt-Vault.ps1"
+) else (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Decrypt-Vault.ps1"
+)
 pause

@@ -148,7 +148,10 @@ fi
 
 echo "Found $TOTAL files to decrypt."
 echo ""
-
+echo -n "Press any key to begin decryption..."
+read -rsn1
+echo ""
+echo ""
 # --- Decrypt function ---------------------------------------------------------
 
 decrypt_one() {
@@ -226,10 +229,15 @@ show_progress() {
   local current=$1 total=$2
   if [ "$total" -eq 0 ]; then return; fi
   local pct=$((current * 100 / total))
-  local filled=$((pct / 2))
-  printf "\r  [%-50s] %3d%% (%d/%d entries processed)" \
-    "$(printf '#%.0s' $(seq 1 $filled 2>/dev/null) 2>/dev/null)" \
-    "$pct" "$current" "$total"
+  local bar_width=40
+  local filled=$((pct * bar_width / 100))
+  local empty=$((bar_width - filled))
+  local filled_bar=""
+  local empty_bar=""
+  local i
+  for ((i = 0; i < filled; i++)); do filled_bar+="█"; done
+  for ((i = 0; i < empty; i++)); do empty_bar+="░"; done
+  printf "\r  %s%s  %3d%%  (%d/%d)" "$filled_bar" "$empty_bar" "$pct" "$current" "$total"
 }
 
 # --- Decrypt files ------------------------------------------------------------
