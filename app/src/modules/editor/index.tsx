@@ -1,6 +1,7 @@
-import { ActionIcon, Center, Flex, Group, Loader, Text, TextInput, Tooltip } from '@mantine/core';
+import { ActionIcon, Center, Flex, Group, Loader, Modal, Text, TextInput, Tooltip } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
-import { IconDeviceFloppy, IconX } from '@tabler/icons-react';
+import { useHotkeys, useMediaQuery } from '@mantine/hooks';
+import { IconHistory, IconDeviceFloppy, IconX } from '@tabler/icons-react';
 import dayjs from 'dayjs';
 import { useCallback, useEffect, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -26,6 +27,9 @@ import {
 import { UnauthorizedError, type JournalEntry } from '../../lib/storage';
 import { SyncEngine } from '../../lib/sync';
 import { startSingleEntryExport } from '../../lib/export/pdfExport';
+import { LastEntrySplitView } from './LastEntrySplitView';
+import { LastEntryViewer } from './LastEntryViewer';
+import { useLastEntry } from './useLastEntry';
 
 function composeEditorDate(date: Date): string {
   return dayjs(date).format('YYYY-MM-DD_HH-mm');
@@ -65,6 +69,15 @@ export default function EditorModule() {
   const navigate = useNavigate();
   const location = useLocation();
   const forceNew = location.state?.forceNew;
+  const isMobile = useMediaQuery('(max-width: 48em)');
+
+  const lastEntry = useLastEntry({
+    syncEngine,
+    activeEntryPath,
+    isDraftMode,
+  });
+
+  useHotkeys([['mod+alt+p', lastEntry.toggle]]);
 
   const editorDateValue = useMemo(() => parseEntryDate(editorDate), [editorDate]);
 
@@ -211,6 +224,9 @@ export default function EditorModule() {
       setInitialEditorTitle(journalEntry.title);
       setInitialEditorContent(finalContent);
       setInitialEditorDate(resolvedDate);
+
+      // Refresh last entry cache in background so next toggle sees this entry
+      void lastEntry.refresh();
     } catch (e) {
       if (e instanceof UnauthorizedError) {
         handleAuthFailure(e);
@@ -254,6 +270,38 @@ export default function EditorModule() {
     );
   }
 
+  const editorElement = !vaultManager ? (
+    <Center style={{ flex: 1 }}>
+      <Loader variant="dots" />
+    </Center>
+  ) : (
+    <Editor
+      key={`${activeEntryPath}-${isDraftMode ? 'draft' : 'entry'}`}
+      value={editorContent}
+      onChange={(value) => setEditorContent(value)}
+      storage={storage!}
+      vaultIdentity={vaultManager.identity!}
+      entryKey={activeEntryPath}
+      onExportPDF={handleExportPDF}
+      isExportingPDF={isExportRunning}
+    />
+  );
+
+  const viewerElement = vaultManager && storage ? (
+    <LastEntryViewer
+      entry={lastEntry.entry}
+      entryPath={lastEntry.entryPath}
+      isLoading={lastEntry.isLoading}
+      error={lastEntry.error}
+      hasPreviousEntry={lastEntry.hasPreviousEntry}
+      storage={storage}
+      secretKey={vaultManager.identity!.secretKey}
+      onClose={lastEntry.close}
+      onRefresh={lastEntry.refresh}
+      isModal={false}
+    />
+  ) : null;
+
   return (
     <>
       <Flex gap="md" align="center" style={{ padding: '0.5rem', borderBottom: '1px solid var(--mantine-color-default-border)' }}>
@@ -288,8 +336,17 @@ export default function EditorModule() {
           size="xs"
         />
 
-        {/* TODO: Need to do something about these buttons */}
         <Group gap={6}>
+          <Tooltip label={lastEntry.isOpen ? 'Close Last Entry' : 'View Last Entry'}>
+            <ActionIcon
+              onClick={lastEntry.toggle}
+              variant={lastEntry.isOpen ? 'filled' : 'light'}
+              color="terracotta"
+              size="lg"
+            >
+              <IconHistory size={20} />
+            </ActionIcon>
+          </Tooltip>
           <Tooltip label="Save & Sync">
             <ActionIcon loading={isSaving} onClick={handleSave} variant="light" size="lg">
               <IconDeviceFloppy size={20} />
@@ -303,22 +360,53 @@ export default function EditorModule() {
         </Group>
       </Flex>
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        {!vaultManager ? (
-          <Center style={{ flex: 1 }}>
-            <Loader variant="dots" />
-          </Center>
-        ) : (
-          <Editor
-            key={`${activeEntryPath}-${isDraftMode ? 'draft' : 'entry'}`}
-            value={editorContent}
-            onChange={(value) => setEditorContent(value)}
-            storage={storage!}
-            vaultIdentity={vaultManager.identity!}
-            entryKey={activeEntryPath}
-            onExportPDF={handleExportPDF}
-            isExportingPDF={isExportRunning}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {/* Mobile Modal View */}
+        {isMobile && vaultManager && storage && (
+          <Modal
+            opened={lastEntry.isOpen}
+            onClose={lastEntry.close}
+            title={
+              <Group gap="xs">
+                <IconHistory size={18} color="var(--mantine-primary-color-filled, #cd784d)" />
+                <Text fw={700} size="sm">
+                  Last Entry
+                </Text>
+              </Group>
+            }
+            fullScreen
+            styles={{
+              body: {
+                height: 'calc(100dvh - 60px)',
+                padding: 0,
+                display: 'flex',
+                flexDirection: 'column',
+              },
+            }}
+          >
+            <LastEntryViewer
+              entry={lastEntry.entry}
+              entryPath={lastEntry.entryPath}
+              isLoading={lastEntry.isLoading}
+              error={lastEntry.error}
+              hasPreviousEntry={lastEntry.hasPreviousEntry}
+              storage={storage}
+              secretKey={vaultManager.identity!.secretKey}
+              onClose={lastEntry.close}
+              onRefresh={lastEntry.refresh}
+              isModal={true}
+            />
+          </Modal>
+        )}
+
+        {/* Desktop Split View or Standard Editor */}
+        {!isMobile && lastEntry.isOpen && viewerElement ? (
+          <LastEntrySplitView
+            editorNode={editorElement}
+            viewerNode={viewerElement}
           />
+        ) : (
+          editorElement
         )}
       </div>
     </>
