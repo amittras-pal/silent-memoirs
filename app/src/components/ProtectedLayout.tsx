@@ -1,15 +1,19 @@
 import {
+  ActionIcon,
   AppShell,
   Avatar,
   Box,
   Burger,
   Button,
   Center,
+  Divider,
   Group,
+  Indicator,
   Loader,
   Menu,
   Modal,
   NavLink,
+  Stack,
   Text,
   Tooltip,
   UnstyledButton,
@@ -18,12 +22,11 @@ import {
 import { useDisclosure, useHotkeys } from "@mantine/hooks";
 import {
   IconEdit,
-  IconFolder,
-  IconHeart,
+  IconEmpathize,
   IconLock,
   IconLogout,
   IconMoon,
-  IconPencilPlus,
+  IconNotebook,
   IconPlus,
   IconSettings,
   IconSun,
@@ -94,6 +97,23 @@ export function ProtectedLayout() {
     return null;
   }, [location.pathname]);
 
+  const handleNewEntry = () => {
+    // We navigate to /editor without path so Editor module auto-starts draft.
+    // Note: discard changes confirm should be handled by the module unmount,
+    // BUT it's safer to confirm here just in case.
+    // We'll pass state={forceNew: true} to let Editor know we want a new draft regardless.
+    if (
+      !confirmDiscardChanges(
+        "You have unsaved changes. Are you sure you want to start a new entry?",
+      )
+    )
+      return;
+
+    void discardStagedForEntry(activeEntryPath);
+    navigate(ROUTES.editor, { state: { forceNew: true } });
+    close();
+  };
+
   useEffect(() => {
     close();
   }, [location.pathname, close]);
@@ -118,7 +138,7 @@ export function ProtectedLayout() {
     <AppShell
       header={{ height: 70 }}
       navbar={{
-        width: 320,
+        width: { base: 260, sm: 56 },
         breakpoint: "sm",
         collapsed: { mobile: !opened },
       }}
@@ -199,44 +219,176 @@ export function ProtectedLayout() {
       </AppShell.Header>
 
       <AppShell.Navbar
-        p="sm"
+        p="xs"
         style={{
           borderRight: "1px solid var(--mantine-color-default-border)",
           display: "flex",
           flexDirection: "column",
         }}
       >
-        <Box style={{ flex: 1, display: "flex", flexDirection: "column", gap: "var(--mantine-spacing-xs)" }}>
+        {/* Desktop Minimal Sidebar */}
+        <Stack
+          visibleFrom="sm"
+          align="center"
+          gap="xs"
+          style={{ flex: 1, width: "100%" }}
+        >
+          <Tooltip
+            label="New Entry"
+            position="right"
+            withArrow
+            offset={12}
+            openDelay={120}
+            withinPortal
+          >
+            <ActionIcon
+              variant="light"
+              color="terracotta"
+              size={32}
+              radius="md"
+              aria-label="New Entry"
+              onClick={handleNewEntry}
+            >
+              <IconPlus size={18} stroke={2} />
+            </ActionIcon>
+          </Tooltip>
+
+          <Divider w="60%" my={4} opacity={0.6} />
+
+          <Indicator
+            size={7}
+            color="orange"
+            offset={2}
+            withBorder
+            processing
+            disabled={!(isDirty && activeSegment !== "editor")}
+          >
+            <Tooltip
+              label={
+                isDirty && activeSegment !== "editor"
+                  ? "Editor (Unsaved Changes)"
+                  : "Editor"
+              }
+              position="right"
+              withArrow
+              offset={12}
+              openDelay={120}
+              withinPortal
+            >
+              <ActionIcon
+                variant={activeSegment === "editor" ? "light" : "subtle"}
+                color={activeSegment === "editor" ? "terracotta" : "gray"}
+                size={32}
+                radius="md"
+                aria-label="Editor"
+                onClick={() => {
+                  if (activeSegment !== "editor") {
+                    navigate(ROUTES.editor);
+                  }
+                }}
+              >
+                <IconEdit size={18} stroke={1.7} />
+              </ActionIcon>
+            </Tooltip>
+          </Indicator>
+
+          <Tooltip
+            label="All Entries"
+            position="right"
+            withArrow
+            offset={12}
+            openDelay={120}
+            withinPortal
+          >
+            <ActionIcon
+              variant={activeSegment === "entries" ? "light" : "subtle"}
+              color={activeSegment === "entries" ? "terracotta" : "gray"}
+              size={32}
+              radius="md"
+              aria-label="All Entries"
+              onClick={() => {
+                navigate(ROUTES.entries);
+              }}
+            >
+              <IconNotebook size={18} stroke={1.7} />
+            </ActionIcon>
+          </Tooltip>
+
+          <Tooltip
+            label="EmotionBook"
+            position="right"
+            withArrow
+            offset={12}
+            openDelay={120}
+            withinPortal
+          >
+            <ActionIcon
+              variant={activeSegment === "emotionbook" ? "light" : "subtle"}
+              color={activeSegment === "emotionbook" ? "terracotta" : "gray"}
+              size={32}
+              radius="md"
+              aria-label="EmotionBook"
+              onClick={() => {
+                navigate(ROUTES.emotionbook);
+              }}
+            >
+              <IconEmpathize size={18} stroke={1.7} />
+            </ActionIcon>
+          </Tooltip>
+
+          <Tooltip
+            label="Vault Settings"
+            position="right"
+            withArrow
+            offset={12}
+            openDelay={120}
+            withinPortal
+          >
+            <ActionIcon
+              variant={activeSegment === "settings" ? "light" : "subtle"}
+              color={activeSegment === "settings" ? "terracotta" : "gray"}
+              size={32}
+              radius="md"
+              aria-label="Vault Settings"
+              onClick={() => {
+                navigate(ROUTES.settings);
+              }}
+            >
+              <IconSettings size={18} stroke={1.7} />
+            </ActionIcon>
+          </Tooltip>
+        </Stack>
+
+        {/* Mobile Expanded Sidebar */}
+        <Box
+          hiddenFrom="sm"
+          style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            gap: "var(--mantine-spacing-xs)",
+          }}
+        >
           <Button
             variant="light"
             fullWidth
-            onClick={() => {
-              // We navigate to /editor without path so Editor module auto-starts draft.
-              // Note: discard changes confirm should be handled by the module unmount,
-              // BUT it's safer to confirm here just in case.
-              // We'll pass state={action: 'new_entry'} to let Editor know we want a new draft regardless.
-              if (
-                !confirmDiscardChanges(
-                  "You have unsaved changes. Are you sure you want to start a new entry?",
-                )
-              )
-                return;
-
-              void discardStagedForEntry(activeEntryPath);
-              navigate(ROUTES.editor, { state: { forceNew: true } });
-              close();
-            }}
+            onClick={handleNewEntry}
             leftSection={<IconPlus size={16} stroke={1.5} />}
           >
             New Entry
           </Button>
           <NavLink
             label="Editor"
-            leftSection={<IconEdit size={16} stroke={1.5} />}
-            rightSection={
-              isDirty && activeSegment !== "editor" ? (
-                <IconPencilPlus size={16} style={{ opacity: 0.6 }} />
-              ) : null
+            leftSection={
+              <Indicator
+                size={8}
+                color="orange"
+                offset={2}
+                withBorder
+                disabled={!(isDirty && activeSegment !== "editor")}
+              >
+                <IconEdit size={16} stroke={1.5} />
+              </Indicator>
             }
             style={{ borderRadius: "0.5rem" }}
             active={activeSegment === "editor"}
@@ -249,7 +401,7 @@ export function ProtectedLayout() {
           />
           <NavLink
             label="All Entries"
-            leftSection={<IconFolder size={16} stroke={1.5} />}
+            leftSection={<IconNotebook size={16} stroke={1.5} />}
             style={{ borderRadius: "0.5rem" }}
             active={activeSegment === "entries"}
             onClick={() => {
@@ -261,7 +413,7 @@ export function ProtectedLayout() {
 
           <NavLink
             label="EmotionBook"
-            leftSection={<IconHeart size={16} stroke={1.5} />}
+            leftSection={<IconEmpathize size={16} stroke={1.5} />}
             style={{ borderRadius: "0.5rem" }}
             active={activeSegment === "emotionbook"}
             onClick={() => {
