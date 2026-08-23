@@ -1,6 +1,13 @@
 import { ActionIcon, Box, Breadcrumbs, Button, Card, Center, Group, Loader, Modal, SimpleGrid, Stack, Text, Title, Tooltip } from '@mantine/core';
 import { Month } from '@mantine/dates';
-import { IconChevronLeft, IconChevronRight, IconFileExport, IconFileText, IconFolder, IconPhoto } from '@tabler/icons-react';
+import {
+  IconChevronLeft,
+  IconChevronRight,
+  IconFileExport,
+  IconFileText,
+  IconLibraryPhoto,
+  IconNotebook,
+} from '@tabler/icons-react';
 import dayjs from 'dayjs';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { resolveEntryTitle } from '../lib/entryTitle';
@@ -58,10 +65,7 @@ function LazyMediaThumbnail({ src, name, storage, secretKey }: LazyMediaThumbnai
         height: 180,
         borderRadius: 8,
         overflow: 'hidden',
-        backgroundColor: 'var(--mantine-color-dark-8)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
+        position: 'relative',
       }}
     >
       {isVisible ? (
@@ -70,33 +74,46 @@ function LazyMediaThumbnail({ src, name, storage, secretKey }: LazyMediaThumbnai
           alt={name}
           storage={storage}
           secretKey={secretKey}
-          loadingLabel="Loading preview..."
-          containerStyle={{ margin: 0, width: '100%', height: '100%' }}
-          style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 0 }}
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          containerStyle={{ width: '100%', height: '100%', margin: 0 }}
         />
       ) : (
-        <Stack align="center" gap={4}>
-          <IconPhoto size={22} stroke={1.4} />
-          <Text size="xs" c="dimmed">Load preview</Text>
-        </Stack>
+        <Center style={{ width: '100%', height: '100%' }}>
+          <Loader size="sm" variant="dots" />
+        </Center>
       )}
     </Box>
   );
 }
 
-function formatDate(value: string): string {
-  return value.replace('_', ' ');
+function formatDate(dateString: string): string {
+  const [datePart, timePart] = dateString.split('_');
+  if (!datePart) return dateString;
+
+  const [year, month, day] = datePart.split('-');
+  if (!year || !month || !day) return dateString;
+
+  const date = new Date(parseInt(year, 10), parseInt(month, 10) - 1, parseInt(day, 10));
+  const monthName = date.toLocaleString('default', { month: 'short' });
+
+  if (timePart) {
+    const [hour, minute] = timePart.split('-');
+    return `${monthName} ${day}, ${year} at ${hour}:${minute}`;
+  }
+
+  return `${monthName} ${day}, ${year}`;
 }
 
-function buildBreadcrumb(currentPath: string): Array<{ label: string; path: string }> {
-  const normalized = currentPath.split('/').filter(Boolean);
-  const crumbs: Array<{ label: string; path: string }> = [{ label: 'Entries', path: '' }];
+function buildBreadcrumb(path: string): Array<{ label: string; path: string }> {
+  if (!path) return [{ label: 'Root', path: '' }];
 
-  normalized.forEach((segment, index) => {
-    crumbs.push({
-      label: segment,
-      path: normalized.slice(0, index + 1).join('/'),
-    });
+  const parts = path.split('/').filter(Boolean);
+  const crumbs = [{ label: 'Root', path: '' }];
+
+  let current = '';
+  parts.forEach((part) => {
+    current = current ? `${current}/${part}` : part;
+    crumbs.push({ label: part, path: current });
   });
 
   return crumbs;
@@ -253,42 +270,49 @@ export function EntriesList({
             <>
               <Text size="xs" fw={700} c="dimmed">FOLDERS</Text>
               <SimpleGrid cols={{ base: 2, sm: 3, lg: 5 }}>
-                {folders.map((folder) => (
-                  <Card
-                    key={`folder-${folder.path || 'root'}`}
-                    withBorder
-                    radius="md"
-                    shadow="sm"
-                    p="sm"
-                    onClick={() => onOpenFolder(folder.path)}
-                    style={{ cursor: 'pointer' }}
-                  >
-                    <Stack gap={4}>
-                      <Group gap="xs" wrap="nowrap" justify="space-between">
-                        <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
-                          <IconFolder size={16} />
-                          <Text fw={700} lineClamp={1}>{folder.name}</Text>
+                {folders.map((folder) => {
+                  const isMedia = folder.name.toLowerCase() === 'media' || /(^|\/)media$/i.test(folder.path);
+                  return (
+                    <Card
+                      key={`folder-${folder.path || 'root'}`}
+                      withBorder
+                      radius="md"
+                      shadow="sm"
+                      p="sm"
+                      onClick={() => onOpenFolder(folder.path)}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      <Stack gap={4}>
+                        <Group gap="xs" wrap="nowrap" justify="space-between">
+                          <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
+                            {isMedia ? (
+                              <IconLibraryPhoto size={16} stroke={1.7} />
+                            ) : (
+                              <IconNotebook size={16} stroke={1.7} />
+                            )}
+                            <Text fw={700} lineClamp={1}>{folder.name}</Text>
+                          </Group>
+                          {onExportDirectory && /^\d{4}$/.test(folder.name) && (
+                            <Tooltip label={`Export ${folder.name} as PDF`} withArrow>
+                              <ActionIcon
+                                size="sm"
+                                variant="subtle"
+                                color="gray"
+                                disabled={isExportRunning}
+                                onClick={(e) => { e.stopPropagation(); onExportDirectory(folder.path); }}
+                              >
+                                <IconFileExport size={14} stroke={1.5} />
+                              </ActionIcon>
+                            </Tooltip>
+                          )}
                         </Group>
-                        {onExportDirectory && /^\d{4}$/.test(folder.name) && (
-                          <Tooltip label={`Export ${folder.name} as PDF`} withArrow>
-                            <ActionIcon
-                              size="sm"
-                              variant="subtle"
-                              color="gray"
-                              disabled={isExportRunning}
-                              onClick={(e) => { e.stopPropagation(); onExportDirectory(folder.path); }}
-                            >
-                              <IconFileExport size={14} stroke={1.5} />
-                            </ActionIcon>
-                          </Tooltip>
-                        )}
-                      </Group>
-                      <Text size="xs" c="dimmed" lineClamp={1}>
-                        {folder.entryCount} entries
-                      </Text>
-                    </Stack>
-                  </Card>
-                ))}
+                        <Text size="xs" c="dimmed" lineClamp={1}>
+                          {folder.entryCount} {isMedia ? (folder.entryCount === 1 ? 'media file' : 'media files') : (folder.entryCount === 1 ? 'entry' : 'entries')}
+                        </Text>
+                      </Stack>
+                    </Card>
+                  );
+                })}
               </SimpleGrid>
             </>
           )}
