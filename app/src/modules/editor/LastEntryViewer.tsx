@@ -1,21 +1,23 @@
 import {
   ActionIcon,
   Alert,
-  Badge,
   Box,
   Button,
   Center,
+  Divider,
   Group,
   Loader,
   Stack,
   Text,
+  Title,
   Tooltip,
   useMantineColorScheme,
 } from '@mantine/core';
 import { useLocalStorage } from '@mantine/hooks';
 import {
   IconAlertCircle,
-  IconExternalLink,
+  IconArrowLeft,
+  IconCalendarSearch,
   IconHistory,
   IconMinus,
   IconPlus,
@@ -23,40 +25,66 @@ import {
   IconX,
 } from '@tabler/icons-react';
 import MDEditor from '@uiw/react-md-editor';
+import dayjs from 'dayjs';
 import React, { useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
 
-import { resolveEntryTitle } from '../../lib/entryTitle';
+import '../../components/Viewer.css';
+import { parseEntryDate, resolveEntryTitle } from '../../lib/entryTitle';
 import { createMarkdownComponents } from '../../lib/markdownComponents';
-import { buildViewerRoute } from '../../lib/routes';
 import type { JournalEntry, StorageProvider } from '../../lib/storage';
+import type { EntryMetadata } from '../../lib/sync';
+import { PastEntryDatePicker } from './PastEntryDatePicker';
+import { PastEntryDayList } from './PastEntryDayList';
+import type { PastEntryViewState } from './useLastEntry';
 
 interface LastEntryViewerProps {
   entry: JournalEntry | null;
-  entryPath: string | null;
+  selectedDate: Date | null;
+  entriesByDate: Map<string, EntryMetadata[]>;
+  activeDayEntries: EntryMetadata[];
+  viewState: PastEntryViewState;
   isLoading: boolean;
   error: string | null;
   hasPreviousEntry: boolean;
+  canGoBack: boolean;
   storage: StorageProvider;
   secretKey: string;
   onClose: () => void;
+  onSelectDate: (date: Date) => void;
+  onSelectEntry: (entryPath: string) => void;
+  onGoBack: () => void;
   onRefresh?: () => void;
   isModal?: boolean;
 }
 
+function formatEntryTimestamp(dateStr: string): string {
+  if (!dateStr) return '';
+  const parsed = parseEntryDate(dateStr);
+  if (parsed && !Number.isNaN(parsed.getTime())) {
+    return dayjs(parsed).format('MMMM D, YYYY [at] HH:mm');
+  }
+  return dateStr.replace('_', ' ');
+}
+
 export function LastEntryViewer({
   entry,
-  entryPath,
+  selectedDate,
+  entriesByDate,
+  activeDayEntries,
+  viewState,
   isLoading,
   error,
   hasPreviousEntry,
+  canGoBack,
   storage,
   secretKey,
   onClose,
+  onSelectDate,
+  onSelectEntry,
+  onGoBack,
   onRefresh,
   isModal = false,
 }: LastEntryViewerProps) {
-  const navigate = useNavigate();
   const { colorScheme } = useMantineColorScheme();
 
   const [fontSize, setFontSize] = useLocalStorage<number>({
@@ -69,16 +97,10 @@ export function LastEntryViewer({
     [storage, secretKey]
   );
 
-  const displayTitle = useMemo(() => {
-    if (!entry) return 'Previous Entry';
-    return resolveEntryTitle(entry.title, entry.date);
-  }, [entry]);
-
-  const handleOpenInFullViewer = () => {
-    if (entryPath) {
-      navigate(buildViewerRoute(entryPath));
-    }
-  };
+  const backTooltipLabel =
+    viewState === 'entry' && activeDayEntries.length > 1
+      ? 'Back to Day List'
+      : 'Back to Empty View';
 
   return (
     <Box
@@ -92,38 +114,40 @@ export function LastEntryViewer({
       }}
       data-color-mode={colorScheme}
     >
-      {/* Header bar (only rendered if not wrapped in standard modal header) */}
-      {!isModal && (
-        <Box
-          p="xs"
-          style={{
-            borderBottom: '1px solid var(--mantine-color-default-border)',
-            backgroundColor: 'var(--mantine-color-default-hover)',
-          }}
-        >
-          <Group justify="space-between" align="center" wrap="nowrap">
-            <Stack gap={2} style={{ minWidth: 0 }}>
-              <Group gap="xs" wrap="nowrap">
-                <Badge
-                  variant="light"
-                  color="terracotta"
+      {/* Header bar */}
+      <Box
+        p="xs"
+        style={{
+          borderBottom: '1px solid var(--mantine-color-default-border)',
+          backgroundColor: 'var(--mantine-color-default-hover)',
+        }}
+      >
+        <Group justify="space-between" align="center" wrap="nowrap">
+          <Group gap="xs" wrap="nowrap" align="center" style={{ minWidth: 0 }}>
+            {canGoBack && (
+              <Tooltip label={backTooltipLabel} withArrow position="bottom" openDelay={300}>
+                <ActionIcon
+                  variant="subtle"
+                  color="gray"
                   size="sm"
-                  leftSection={<IconHistory size={12} />}
+                  onClick={onGoBack}
+                  aria-label="Go back"
                 >
-                  Last Entry
-                </Badge>
-                {entry?.date && (
-                  <Text c="dimmed" size="xs" lineClamp={1}>
-                    {entry.date}
-                  </Text>
-                )}
-              </Group>
-              <Text fw={700} size="sm" lineClamp={1}>
-                {displayTitle}
-              </Text>
-            </Stack>
+                  <IconArrowLeft size={16} stroke={1.5} />
+                </ActionIcon>
+              </Tooltip>
+            )}
 
-            <Group gap={4} wrap="nowrap">
+            <PastEntryDatePicker
+              selectedDate={selectedDate}
+              entriesByDate={entriesByDate}
+              onSelectDate={onSelectDate}
+              disabled={!hasPreviousEntry}
+            />
+          </Group>
+
+          <Group gap={4} wrap="nowrap">
+            {viewState === 'entry' && (
               <Group gap={2} wrap="nowrap" align="center">
                 <Tooltip label="Decrease font size" withArrow position="bottom" openDelay={300}>
                   <ActionIcon
@@ -136,7 +160,7 @@ export function LastEntryViewer({
                     <IconMinus size={14} stroke={1.5} />
                   </ActionIcon>
                 </Tooltip>
-                <Text size="xs" c="dimmed" style={{ width: 24, textAlign: 'center' }}>
+                <Text size="xs" c="dimmed" style={{ minWidth: 28, textAlign: 'center' }}>
                   {fontSize}
                 </Text>
                 <Tooltip label="Increase font size" withArrow position="bottom" openDelay={300}>
@@ -151,29 +175,18 @@ export function LastEntryViewer({
                   </ActionIcon>
                 </Tooltip>
               </Group>
+            )}
 
-              {entryPath && (
-                <Tooltip label="Open in Full Viewer" withArrow position="bottom" openDelay={300}>
-                  <ActionIcon
-                    variant="subtle"
-                    color="gray"
-                    size="sm"
-                    onClick={handleOpenInFullViewer}
-                  >
-                    <IconExternalLink size={16} stroke={1.5} />
-                  </ActionIcon>
-                </Tooltip>
-              )}
-
+            {!isModal && (
               <Tooltip label="Close panel" withArrow position="bottom" openDelay={300}>
                 <ActionIcon variant="subtle" color="gray" size="sm" onClick={onClose}>
                   <IconX size={16} stroke={1.5} />
                 </ActionIcon>
               </Tooltip>
-            </Group>
+            )}
           </Group>
-        </Box>
-      )}
+        </Group>
+      </Box>
 
       {/* Content body */}
       <Box
@@ -189,7 +202,7 @@ export function LastEntryViewer({
             <Stack align="center" gap="xs">
               <Loader size="md" variant="dots" color="terracotta" />
               <Text size="sm" c="dimmed">
-                Loading previous entry...
+                Loading entry...
               </Text>
             </Stack>
           </Center>
@@ -236,18 +249,55 @@ export function LastEntryViewer({
           </Center>
         )}
 
-        {!isLoading && !error && hasPreviousEntry && entry && (
-          <MDEditor.Markdown
-            className="md-viewer"
-            source={entry.plaintext || '_No content recorded._'}
-            style={
-              {
-                backgroundColor: 'transparent',
-                '--viewer-font-size': `${fontSize}px`,
-              } as React.CSSProperties
-            }
-            components={markdownComponents}
+        {!isLoading && !error && hasPreviousEntry && viewState === 'day_selection' && (
+          <PastEntryDayList
+            date={selectedDate}
+            entries={activeDayEntries}
+            onSelectEntry={onSelectEntry}
           />
+        )}
+
+        {!isLoading && !error && hasPreviousEntry && viewState === 'empty' && (
+          <Center style={{ height: '100%', minHeight: 250 }}>
+            <Stack align="center" gap="xs">
+              <IconCalendarSearch size={40} style={{ opacity: 0.35 }} />
+              <Text fw={600} size="sm" c="dimmed">
+                No Entry Selected
+              </Text>
+              <Text size="xs" c="dimmed" ta="center" maw={260}>
+                Select a date from the header above to reference past journal entries while writing.
+              </Text>
+            </Stack>
+          </Center>
+        )}
+
+        {!isLoading && !error && hasPreviousEntry && viewState === 'entry' && entry && (
+          <Stack gap="md">
+            <Stack gap={2}>
+              <Title order={3} fw={700} style={{ wordBreak: 'break-word' }}>
+                {resolveEntryTitle(entry.title, entry.date)}
+              </Title>
+              {entry.date && (
+                <Text size="xs" c="dimmed">
+                  {formatEntryTimestamp(entry.date)}
+                </Text>
+              )}
+            </Stack>
+
+            <Divider />
+
+            <MDEditor.Markdown
+              className="md-viewer"
+              source={entry.plaintext || '_No content recorded._'}
+              style={
+                {
+                  backgroundColor: 'transparent',
+                  '--viewer-font-size': `${fontSize}px`,
+                } as React.CSSProperties
+              }
+              components={markdownComponents}
+            />
+          </Stack>
         )}
       </Box>
     </Box>

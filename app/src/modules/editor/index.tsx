@@ -290,13 +290,20 @@ export default function EditorModule() {
   const viewerElement = vaultManager && storage ? (
     <LastEntryViewer
       entry={lastEntry.entry}
-      entryPath={lastEntry.entryPath}
+      selectedDate={lastEntry.selectedDate}
+      entriesByDate={lastEntry.entriesByDate}
+      activeDayEntries={lastEntry.activeDayEntries}
+      viewState={lastEntry.viewState}
       isLoading={lastEntry.isLoading}
       error={lastEntry.error}
       hasPreviousEntry={lastEntry.hasPreviousEntry}
+      canGoBack={lastEntry.canGoBack}
       storage={storage}
       secretKey={vaultManager.identity!.secretKey}
       onClose={lastEntry.close}
+      onSelectDate={lastEntry.selectDate}
+      onSelectEntry={lastEntry.selectEntry}
+      onGoBack={lastEntry.goBack}
       onRefresh={lastEntry.refresh}
       isModal={false}
     />
@@ -337,7 +344,7 @@ export default function EditorModule() {
         />
 
         <Group gap={6}>
-          <Tooltip label={lastEntry.isOpen ? 'Close Last Entry' : 'View Last Entry'}>
+          <Tooltip label={lastEntry.isOpen ? 'Close Past Entry' : 'View Past Entry'}>
             <ActionIcon
               onClick={lastEntry.toggle}
               variant={lastEntry.isOpen ? 'filled' : 'light'}
@@ -370,7 +377,7 @@ export default function EditorModule() {
               <Group gap="xs">
                 <IconHistory size={18} color="var(--mantine-primary-color-filled, #cd784d)" />
                 <Text fw={700} size="sm">
-                  Last Entry
+                  Past Entry
                 </Text>
               </Group>
             }
@@ -386,13 +393,20 @@ export default function EditorModule() {
           >
             <LastEntryViewer
               entry={lastEntry.entry}
-              entryPath={lastEntry.entryPath}
+              selectedDate={lastEntry.selectedDate}
+              entriesByDate={lastEntry.entriesByDate}
+              activeDayEntries={lastEntry.activeDayEntries}
+              viewState={lastEntry.viewState}
               isLoading={lastEntry.isLoading}
               error={lastEntry.error}
               hasPreviousEntry={lastEntry.hasPreviousEntry}
+              canGoBack={lastEntry.canGoBack}
               storage={storage}
               secretKey={vaultManager.identity!.secretKey}
               onClose={lastEntry.close}
+              onSelectDate={lastEntry.selectDate}
+              onSelectEntry={lastEntry.selectEntry}
+              onGoBack={lastEntry.goBack}
               onRefresh={lastEntry.refresh}
               isModal={true}
             />
